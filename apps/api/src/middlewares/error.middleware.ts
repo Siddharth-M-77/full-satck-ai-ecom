@@ -32,11 +32,12 @@ export function errorHandler(
     return;
   }
 
-  if (err instanceof ZodError) {
+  if (err instanceof ZodError || err.name === 'ZodError') {
+    const zodErr = err as ZodError;
     logger.warn({
       requestId,
       statusCode: 400,
-      validationErrors: err.errors,
+      validationErrors: zodErr.errors,
     });
 
     res.status(400).json({
@@ -44,10 +45,10 @@ export function errorHandler(
       message: 'Validation failed',
       error: {
         code: 'VALIDATION_ERROR',
-        details: err.errors.map((e) => ({
+        details: zodErr.errors?.map((e) => ({
           field: e.path.join('.'),
           message: e.message,
-        })),
+        })) || [],
       },
     });
     return;

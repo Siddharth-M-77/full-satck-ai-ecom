@@ -36,4 +36,20 @@ export const AddressInputSchema = z.object({
   postalCode: z.string().min(4, 'Postal code is required'),
   country: z.string().default('IN'),
   isDefault: z.boolean().default(false),
+  type: z.enum(['shipping', 'billing', 'both']).default('shipping'),
 });
+
+export const ForgotPasswordInputSchema = z.object({
+  email: z.string().email('Invalid email address'),
+});
+
+export const ResetPasswordInputSchema = z.object({
+  token: z.string().min(1, 'Token is required'),
+  newPassword: z.string().min(8, 'New password must be at least 8 characters'),
+});
+
+export const UpdateProfileInputSchema = z.object({
+  name: z.string().min(2, 'Name must be at least 2 characters').optional(),
+  phone: z.string().min(10, 'Valid phone number is required').optional(),
+});
+

@@ -1,5 +1,6 @@
 import type { Metadata } from 'next';
 import './globals.css';
+import { Navbar } from '../components/common/Navbar';
 
 export const metadata: Metadata = {
   title: 'ShopSense AI — Next-Gen Intelligent E-Commerce',
@@ -13,8 +14,9 @@ export default function RootLayout({
 }>) {
   return (
     <html lang="en">
-      <body className="antialiased min-h-screen flex flex-col font-sans">
-        {children}
+      <body className="antialiased min-h-screen flex flex-col font-sans bg-slate-50 text-slate-900">
+        <Navbar />
+        <div className="flex-1">{children}</div>
       </body>
     </html>
   );

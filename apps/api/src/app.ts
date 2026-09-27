@@ -9,7 +9,11 @@ import { logger } from './config/logger.js';
 import { getRedisClient } from './config/redis.js';
 import { requestIdMiddleware } from './middlewares/request-id.middleware.js';
 import { errorHandler } from './middlewares/error.middleware.js';
+import { authenticate, requireRoles } from './middlewares/auth.middleware.js';
 import { AppError } from './utils/app-error.js';
+import { authRouter } from './modules/auth/auth.routes.js';
+import { userRouter } from './modules/users/user.routes.js';
+import { USER_ROLES } from '@shopsense/shared';
 
 export function createApp(): Express {
   const app: Express = express();
@@ -87,6 +91,23 @@ export function createApp(): Express {
       documentation: '/api/docs',
     });
   });
+
+  // API v1 Routes
+  app.use('/api/v1/auth', authRouter);
+  app.use('/api/v1/users', userRouter);
+
+  // RBAC Demonstration & Verification endpoint
+  app.get(
+    '/api/v1/admin/rbac-check',
+    authenticate,
+    requireRoles(USER_ROLES.ADMIN),
+    (_req: Request, res: Response) => {
+      res.json({
+        success: true,
+        message: 'RBAC verification passed. User has administrator privileges.',
+      });
+    }
+  );
 
   // 404 handler
   app.use((_req: Request, _res: Response, next: NextFunction) => {
