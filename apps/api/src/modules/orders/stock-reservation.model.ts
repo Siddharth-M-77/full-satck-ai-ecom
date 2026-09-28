@@ -32,16 +32,14 @@ const stockReservationSchema = new Schema<IStockReservation>(
       default: 'active',
       index: true,
     },
-    expiresAt: {
-      type: Date,
-      required: true,
-      index: { expires: 0 }, // TTL index: automatically removed by MongoDB upon expiry
-    },
+    expiresAt: { type: Date, required: true },
   },
   {
     timestamps: { createdAt: true, updatedAt: false },
   }
 );
+
+stockReservationSchema.index({ status: 1, expiresAt: 1 });
 
 export const StockReservation: Model<IStockReservation> =
   mongoose.models.StockReservation ||

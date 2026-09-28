@@ -79,7 +79,11 @@ export class OrderService {
   }
 
   static async releaseStock(orderId: string | mongoose.Types.ObjectId) {
-    const reservation = await StockReservation.findOne({ orderId, status: 'active' });
+    const reservation = await StockReservation.findOneAndUpdate(
+      { orderId, status: 'active' },
+      { $set: { status: 'released' } },
+      { new: true }
+    );
     if (!reservation) return;
 
     for (const item of reservation.items) {
@@ -89,8 +93,6 @@ export class OrderService {
       );
     }
 
-    reservation.status = 'released';
-    await reservation.save();
     logger.info({ orderId }, 'Stock reservation released');
   }
 
@@ -99,6 +101,32 @@ export class OrderService {
       { orderId, status: 'active' },
       { $set: { status: 'committed' } }
     );
+  }
+
+  static async releaseExpiredReservations(now = new Date()): Promise<number> {
+    const expired = await StockReservation.find({
+      status: 'active',
+      expiresAt: { $lte: now },
+    }).select('orderId');
+
+    for (const reservation of expired) {
+      await this.releaseStock(reservation.orderId);
+      await Order.updateOne(
+        { _id: reservation.orderId, status: ORDER_STATUS.PENDING_PAYMENT },
+        {
+          $set: { status: ORDER_STATUS.CANCELLED },
+          $push: {
+            statusHistory: {
+              status: ORDER_STATUS.CANCELLED,
+              timestamp: now,
+              comment: 'Payment window expired; reserved inventory was released',
+            },
+          },
+        }
+      );
+    }
+
+    return expired.length;
   }
 
   static async createOrder(

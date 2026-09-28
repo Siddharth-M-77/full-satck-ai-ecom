@@ -15,6 +15,7 @@ import { WebhookEvent } from '../src/modules/payments/webhook-event.model.js';
 import { PRODUCT_STATUS, USER_ROLES, ORDER_STATUS } from '@shopsense/shared';
 import { generateAccessToken } from '../src/modules/auth/token.util.js';
 import { env } from '../src/config/env.js';
+import { OrderService } from '../src/modules/orders/order.service.js';
 
 describe('Checkout, Stock Reservation & Payments Integration Tests', () => {
   let mongoServer: MongoMemoryServer;
@@ -182,6 +183,40 @@ describe('Checkout, Stock Reservation & Payments Integration Tests', () => {
     // Verify stock never went below 0!
     const finalProduct = await Product.findById(product._id);
     expect(finalProduct?.variants[0].stock).toBe(0);
+  });
+
+  it('releases expired stock reservations once and cancels pending payment orders', async () => {
+    const product = await Product.create({
+      title: 'Expiry Test Headphones',
+      slug: 'expiry-test-headphones',
+      description: 'Reservation expiry regression product',
+      categoryId: testCategory._id,
+      basePrice: 5000,
+      status: PRODUCT_STATUS.PUBLISHED,
+      variants: [{ sku: 'EXPIRY-1', price: 5000, stock: 3, images: [] }],
+    });
+
+    await request(app)
+      .post('/api/v1/cart/items')
+      .set('Authorization', `Bearer ${user1Token}`)
+      .send({ productId: product._id.toString(), sku: 'EXPIRY-1', quantity: 2 });
+
+    const checkout = await request(app)
+      .post('/api/v1/checkout/create-order')
+      .set('Authorization', `Bearer ${user1Token}`)
+      .send({ shippingAddress: { fullName: 'Buyer', addressLine1: 'Street', city: 'Pune', postalCode: '411001' } });
+    const orderId = checkout.body.data.order._id;
+
+    await StockReservation.updateOne(
+      { orderId },
+      { $set: { expiresAt: new Date(Date.now() - 1000) } }
+    );
+
+    expect(await OrderService.releaseExpiredReservations()).toBe(1);
+    expect(await OrderService.releaseExpiredReservations()).toBe(0);
+    expect((await Product.findById(product._id))?.variants[0].stock).toBe(3);
+    expect((await Order.findById(orderId))?.status).toBe(ORDER_STATUS.CANCELLED);
+    expect((await StockReservation.findOne({ orderId }))?.status).toBe('released');
   });
 
   it('verifies payment signature, transitions order to PAID and commits reservation', async () => {
