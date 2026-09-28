@@ -8,7 +8,8 @@
     "build": "turbo run build",
     "lint": "turbo run lint",
     "typecheck": "turbo run typecheck",
-    "test": "turbo run test"
+    "test": "turbo run test",
+    "seed": "pnpm --filter @shopsense/api seed"
   },
   "devDependencies": {
     "turbo": "^2.4.4",

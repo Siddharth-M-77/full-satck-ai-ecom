@@ -36,6 +36,30 @@ export async function authenticate(
   }
 }
 
+export async function optionalAuthenticate(
+  req: Request,
+  _res: Response,
+  next: NextFunction
+): Promise<void> {
+  const authHeader = req.headers.authorization;
+  if (!authHeader || !authHeader.startsWith('Bearer ')) {
+    return next();
+  }
+
+  const token = authHeader.split(' ')[1];
+  try {
+    const payload = verifyAccessToken(token);
+    const user = await User.findById(payload.userId);
+    if (user && !user.isBlocked) {
+      req.user = user;
+    }
+  } catch {
+    // Ignore invalid token for optional auth
+  }
+
+  next();
+}
+
 export function requireRoles(...allowedRoles: UserRole[]) {
   return (req: Request, _res: Response, next: NextFunction): void => {
     if (!req.user) {

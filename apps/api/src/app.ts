@@ -13,6 +13,10 @@ import { authenticate, requireRoles } from './middlewares/auth.middleware.js';
 import { AppError } from './utils/app-error.js';
 import { authRouter } from './modules/auth/auth.routes.js';
 import { userRouter } from './modules/users/user.routes.js';
+import { catalogRouter } from './modules/catalog/catalog.routes.js';
+import { cartRouter } from './modules/cart/cart.routes.js';
+import { orderRouter } from './modules/orders/order.routes.js';
+import { adminRouter } from './modules/admin/admin.routes.js';
 import { USER_ROLES } from '@shopsense/shared';
 
 export function createApp(): Express {
@@ -95,6 +99,10 @@ export function createApp(): Express {
   // API v1 Routes
   app.use('/api/v1/auth', authRouter);
   app.use('/api/v1/users', userRouter);
+  app.use('/api/v1/catalog', catalogRouter);
+  app.use('/api/v1/cart', cartRouter);
+  app.use('/api/v1', orderRouter);
+  app.use('/api/v1/admin', adminRouter);
 
   // RBAC Demonstration & Verification endpoint
   app.get(

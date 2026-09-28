@@ -2,12 +2,18 @@
 
 import Link from 'next/link';
 import { useAuthStore } from '../../stores/auth.store';
+import { useCartStore } from '../../stores/cart.store';
 import { Sparkles, ShoppingBag, User, LogOut, MapPin } from 'lucide-react';
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 
 export function Navbar() {
   const { user, isAuthenticated, clearAuth } = useAuthStore();
+  const { itemCount, fetchCart } = useCartStore();
   const [dropdownOpen, setDropdownOpen] = useState(false);
+
+  useEffect(() => {
+    fetchCart();
+  }, [fetchCart]);
 
   return (
     <header className="sticky top-0 z-50 backdrop-blur-md bg-white/85 border-b border-slate-200/80 transition-all">
@@ -58,6 +64,11 @@ export function Navbar() {
             aria-label="Shopping Cart"
           >
             <ShoppingBag className="w-5 h-5" />
+            {itemCount > 0 && (
+              <span className="absolute -top-1 -right-1 w-5 h-5 rounded-full bg-emerald-600 text-white font-bold text-[10px] flex items-center justify-center shadow-sm">
+                {itemCount}
+              </span>
+            )}
           </Link>
 
           {isAuthenticated && user ? (

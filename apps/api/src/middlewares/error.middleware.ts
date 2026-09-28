@@ -65,7 +65,7 @@ export function errorHandler(
     message: 'Internal server error',
     error: {
       code: 'INTERNAL_SERVER_ERROR',
-      ...(env.NODE_ENV === 'development' ? { details: err.message } : {}),
+      ...(env.NODE_ENV !== 'production' ? { details: err.message, stack: err.stack } : {}),
     },
   });
 }
