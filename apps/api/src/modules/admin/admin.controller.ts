@@ -9,6 +9,8 @@ import { InventoryLog } from './inventory-log.model.js';
 import { AppError } from '../../utils/app-error.js';
 import { invalidateCatalogCache } from '../catalog/cache.util.js';
 import { ORDER_STATUS } from '@shopsense/shared';
+import { Coupon } from '../coupons/coupon.model.js';
+import { OrderService } from '../orders/order.service.js';
 
 export class AdminController {
   static async getDashboard(req: Request, res: Response, next: NextFunction) {
@@ -61,7 +63,7 @@ export class AdminController {
 
   static async updateOrderStatus(req: Request, res: Response, next: NextFunction) {
     try {
-      const { id } = req.params;
+      const id = String(req.params.id);
       const { status, trackingNumber, carrier, comment } = req.body;
 
       if (!status || !Object.values(ORDER_STATUS).includes(status)) {
@@ -70,31 +72,28 @@ export class AdminController {
 
       const order = await Order.findById(id);
       if (!order) throw AppError.notFound('Order not found');
-
       const prevStatus = order.status;
-      order.status = status;
-
-      if (!order.fulfillment) {
-        order.fulfillment = {};
-      }
-
-      if (trackingNumber) order.fulfillment.trackingNumber = trackingNumber;
-      if (carrier) order.fulfillment.carrier = carrier;
-
-      if (status === ORDER_STATUS.SHIPPED && !order.fulfillment.shippedAt) {
-        order.fulfillment.shippedAt = new Date();
-      } else if (status === ORDER_STATUS.DELIVERED && !order.fulfillment.deliveredAt) {
-        order.fulfillment.deliveredAt = new Date();
-      }
-
-      order.statusHistory.push({
+      const transitioned = await OrderService.transitionStatus(
+        id,
         status,
-        timestamp: new Date(),
-        comment: comment || `Status updated from ${prevStatus} to ${status} by admin`,
-        updatedBy: req.user?._id,
-      });
+        comment || `Status updated from ${prevStatus} to ${status} by admin`,
+        req.user?._id.toString()
+      );
 
-      await order.save();
+      if (!transitioned.fulfillment) {
+        transitioned.fulfillment = {};
+      }
+
+      if (trackingNumber) transitioned.fulfillment.trackingNumber = trackingNumber;
+      if (carrier) transitioned.fulfillment.carrier = carrier;
+
+      if (status === ORDER_STATUS.SHIPPED && !transitioned.fulfillment.shippedAt) {
+        transitioned.fulfillment.shippedAt = new Date();
+      } else if (status === ORDER_STATUS.DELIVERED && !transitioned.fulfillment.deliveredAt) {
+        transitioned.fulfillment.deliveredAt = new Date();
+      }
+
+      await transitioned.save();
 
       // Audit Log
       await AuditLog.create({
@@ -102,11 +101,11 @@ export class AdminController {
         userEmail: req.user?.email || 'admin@shopsense.ai',
         action: 'ORDER_STATUS_UPDATE',
         resourceType: 'Order',
-        resourceId: order.orderNumber,
+        resourceId: transitioned.orderNumber,
         diff: { before: { status: prevStatus }, after: { status } },
       });
 
-      res.json({ success: true, data: order });
+      res.json({ success: true, data: transitioned });
     } catch (err) {
       next(err);
     }
@@ -209,6 +208,40 @@ export class AdminController {
     }
   }
 
+  static async deleteProduct(req: Request, res: Response, next: NextFunction) {
+    try {
+      const id = String(req.params.id);
+      const product = await Product.findByIdAndUpdate(
+        id,
+        { $set: { status: 'archived' } },
+        { new: true, runValidators: true }
+      );
+      if (!product) throw AppError.notFound('Product not found');
+      await invalidateCatalogCache();
+      await AuditLog.create({
+        userId: req.user?._id,
+        userEmail: req.user?.email || 'admin',
+        action: 'PRODUCT_ARCHIVED',
+        resourceType: 'Product',
+        resourceId: product.slug,
+        diff: { after: { status: product.status } },
+      });
+      res.json({ success: true, data: product });
+    } catch (err) {
+      next(err);
+    }
+  }
+
+  static async getLowStock(req: Request, res: Response, next: NextFunction) {
+    try {
+      const threshold = Math.min(1000, Math.max(0, Number(req.query.threshold) || 5));
+      const data = await AdminService.getLowStock(threshold);
+      res.json({ success: true, data, threshold });
+    } catch (err) {
+      next(err);
+    }
+  }
+
   static async adjustStock(req: Request, res: Response, next: NextFunction) {
     try {
       const { productId, sku, changeQuantity, notes } = req.body;
@@ -237,20 +270,110 @@ export class AdminController {
       const page = parseInt(req.query.page as string, 10) || 1;
       const limit = parseInt(req.query.limit as string, 10) || 20;
 
-      const customers = await User.find({ roles: 'customer' })
+      const customers = await User.find({ role: 'customer' })
         .select('-passwordHash')
         .sort({ createdAt: -1 })
         .skip((page - 1) * limit)
         .limit(limit)
         .lean();
 
-      const total = await User.countDocuments({ roles: 'customer' });
+      const total = await User.countDocuments({ role: 'customer' });
 
       res.json({
         success: true,
         data: customers,
         pagination: { page, limit, total, pages: Math.ceil(total / limit) },
       });
+    } catch (err) {
+      next(err);
+    }
+  }
+
+  static async setCustomerBlocked(req: Request, res: Response, next: NextFunction) {
+    try {
+      const id = String(req.params.id);
+      const isBlocked = req.body.isBlocked;
+      if (typeof isBlocked !== 'boolean') throw AppError.badRequest('isBlocked must be a boolean');
+      const customer = await User.findOneAndUpdate(
+        { _id: id, role: 'customer' },
+        { $set: { isBlocked } },
+        { new: true }
+      ).select('-passwordHash -refreshTokens -verificationToken -resetPasswordToken');
+      if (!customer) throw AppError.notFound('Customer not found');
+      await AuditLog.create({
+        userId: req.user?._id,
+        userEmail: req.user?.email || 'admin',
+        action: isBlocked ? 'CUSTOMER_BLOCKED' : 'CUSTOMER_UNBLOCKED',
+        resourceType: 'User',
+        resourceId: customer.email,
+        diff: { after: { isBlocked } },
+      });
+      res.json({ success: true, data: customer });
+    } catch (err) {
+      next(err);
+    }
+  }
+
+  static async getCoupons(_req: Request, res: Response, next: NextFunction) {
+    try {
+      const coupons = await Coupon.find().sort({ createdAt: -1 }).lean();
+      res.json({ success: true, data: coupons });
+    } catch (err) {
+      next(err);
+    }
+  }
+
+  static async createCoupon(req: Request, res: Response, next: NextFunction) {
+    try {
+      const coupon = await Coupon.create(req.body);
+      await AuditLog.create({
+        userId: req.user?._id,
+        userEmail: req.user?.email || 'admin',
+        action: 'COUPON_CREATED',
+        resourceType: 'Coupon',
+        resourceId: coupon.code,
+        diff: { after: { code: coupon.code, discountType: coupon.discountType, discountValue: coupon.discountValue } },
+      });
+      res.status(201).json({ success: true, data: coupon });
+    } catch (err) {
+      next(err);
+    }
+  }
+
+  static async updateCoupon(req: Request, res: Response, next: NextFunction) {
+    try {
+      const coupon = await Coupon.findByIdAndUpdate(String(req.params.id), req.body, {
+        new: true,
+        runValidators: true,
+      });
+      if (!coupon) throw AppError.notFound('Coupon not found');
+      await AuditLog.create({
+        userId: req.user?._id,
+        userEmail: req.user?.email || 'admin',
+        action: 'COUPON_UPDATED',
+        resourceType: 'Coupon',
+        resourceId: coupon.code,
+        diff: { after: { isActive: coupon.isActive, endDate: coupon.endDate } },
+      });
+      res.json({ success: true, data: coupon });
+    } catch (err) {
+      next(err);
+    }
+  }
+
+  static async deleteCoupon(req: Request, res: Response, next: NextFunction) {
+    try {
+      const coupon = await Coupon.findByIdAndDelete(String(req.params.id));
+      if (!coupon) throw AppError.notFound('Coupon not found');
+      await AuditLog.create({
+        userId: req.user?._id,
+        userEmail: req.user?.email || 'admin',
+        action: 'COUPON_DELETED',
+        resourceType: 'Coupon',
+        resourceId: coupon.code,
+        diff: { before: { code: coupon.code } },
+      });
+      res.json({ success: true, data: { id: coupon._id } });
     } catch (err) {
       next(err);
     }

@@ -3,6 +3,8 @@ import { OrderService } from './order.service.js';
 import { PaymentService } from '../payments/payment.service.js';
 import { Order } from './order.model.js';
 import { AppError } from '../../utils/app-error.js';
+import { InvoiceService } from './invoice.service.js';
+import { ORDER_STATUS } from '@shopsense/shared';
 
 export class OrderController {
   static async createOrder(req: Request, res: Response, next: NextFunction) {
@@ -21,7 +23,10 @@ export class OrderController {
 
   static async verifyPayment(req: Request, res: Response, next: NextFunction) {
     try {
-      const result = await PaymentService.confirmPayment(req.body);
+      const result = await PaymentService.confirmPayment({
+        ...req.body,
+        userId: req.user!._id.toString(),
+      });
       res.status(200).json({
         success: true,
         message: 'Payment verified and order confirmed.',
@@ -64,6 +69,34 @@ export class OrderController {
       if (!order) throw AppError.notFound('Order not found');
 
       res.status(200).json({ success: true, data: order });
+    } catch (err) {
+      next(err);
+    }
+  }
+
+  static async downloadInvoice(req: Request, res: Response, next: NextFunction) {
+    try {
+      const orderId = String(req.params.id);
+      const order = await Order.findOne({ _id: orderId, userId: req.user!._id });
+      if (!order) throw AppError.notFound('Order not found');
+
+      const invoiceReadyStatuses = new Set<string>([
+        ORDER_STATUS.PAID,
+        ORDER_STATUS.PROCESSING,
+        ORDER_STATUS.SHIPPED,
+        ORDER_STATUS.DELIVERED,
+        ORDER_STATUS.REFUND_REQUESTED,
+        ORDER_STATUS.REFUNDED,
+      ]);
+      if (!invoiceReadyStatuses.has(order.status)) {
+        throw AppError.conflict('Invoice is available after payment is confirmed');
+      }
+
+      const pdf = await InvoiceService.generate(order, req.user?.email);
+      res.setHeader('Content-Type', 'application/pdf');
+      res.setHeader('Content-Disposition', `attachment; filename="${order.orderNumber}-invoice.pdf"`);
+      res.setHeader('Content-Length', pdf.length);
+      res.status(200).send(pdf);
     } catch (err) {
       next(err);
     }

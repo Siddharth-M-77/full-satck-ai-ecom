@@ -10,8 +10,11 @@ import { Order } from '../src/modules/orders/order.model.js';
 import { AuditLog } from '../src/modules/admin/audit-log.model.js';
 import { InventoryLog } from '../src/modules/admin/inventory-log.model.js';
 import { Payment } from '../src/modules/payments/payment.model.js';
+import { Coupon } from '../src/modules/coupons/coupon.model.js';
 import { PRODUCT_STATUS, USER_ROLES, ORDER_STATUS } from '@shopsense/shared';
 import { generateAccessToken } from '../src/modules/auth/token.util.js';
+import crypto from 'crypto';
+import { env } from '../src/config/env.js';
 
 describe('Admin Panel, Analytics & Inventory Logs Integration Tests', () => {
   let mongoServer: MongoMemoryServer;
@@ -41,6 +44,7 @@ describe('Admin Panel, Analytics & Inventory Logs Integration Tests', () => {
     await User.deleteMany({});
     await Order.deleteMany({});
     await Payment.deleteMany({});
+    await Coupon.deleteMany({});
     await AuditLog.deleteMany({});
     await InventoryLog.deleteMany({});
 
@@ -173,6 +177,138 @@ describe('Admin Panel, Analytics & Inventory Logs Integration Tests', () => {
     expect(auditLogs[0].userEmail).toBe(adminUser.email);
   });
 
+  it('lists low-stock variants using the requested threshold', async () => {
+    const response = await request(app)
+      .get('/api/v1/admin/inventory/low-stock?threshold=15')
+      .set('Authorization', `Bearer ${adminToken}`);
+
+    expect(response.status).toBe(200);
+    expect(response.body.data).toEqual(expect.arrayContaining([
+      expect.objectContaining({ sku: 'NC-BLK-01', stock: 15, threshold: 15 }),
+    ]));
+  });
+
+  it('archives a product through the admin product endpoint', async () => {
+    const response = await request(app)
+      .delete(`/api/v1/admin/products/${testProduct._id}`)
+      .set('Authorization', `Bearer ${adminToken}`);
+
+    expect(response.status).toBe(200);
+    expect(response.body.data.status).toBe(PRODUCT_STATUS.ARCHIVED);
+    expect((await Product.findById(testProduct._id))?.status).toBe(PRODUCT_STATUS.ARCHIVED);
+  });
+
+  it('blocks and unblocks customer accounts with audit records', async () => {
+    const blocked = await request(app)
+      .patch(`/api/v1/admin/customers/${customerUser._id}/block`)
+      .set('Authorization', `Bearer ${adminToken}`)
+      .send({ isBlocked: true });
+
+    expect(blocked.status).toBe(200);
+    expect(blocked.body.data.isBlocked).toBe(true);
+
+    const unblocked = await request(app)
+      .patch(`/api/v1/admin/customers/${customerUser._id}/block`)
+      .set('Authorization', `Bearer ${adminToken}`)
+      .send({ isBlocked: false });
+
+    expect(unblocked.status).toBe(200);
+    expect(unblocked.body.data.isBlocked).toBe(false);
+    expect(await AuditLog.countDocuments({ action: { $in: ['CUSTOMER_BLOCKED', 'CUSTOMER_UNBLOCKED'] } })).toBe(2);
+  });
+
+  it('supports coupon create, update and delete from admin routes', async () => {
+    const created = await request(app)
+      .post('/api/v1/admin/coupons')
+      .set('Authorization', `Bearer ${adminToken}`)
+      .send({
+        code: 'SAVE10',
+        discountType: 'percentage',
+        discountValue: 10,
+        minOrderValue: 500,
+        startDate: new Date(),
+        endDate: new Date(Date.now() + 86400000),
+      });
+
+    expect(created.status).toBe(201);
+    const couponId = created.body.data._id;
+
+    const updated = await request(app)
+      .put(`/api/v1/admin/coupons/${couponId}`)
+      .set('Authorization', `Bearer ${adminToken}`)
+      .send({ isActive: false });
+    expect(updated.status).toBe(200);
+    expect(updated.body.data.isActive).toBe(false);
+
+    const listed = await request(app)
+      .get('/api/v1/admin/coupons')
+      .set('Authorization', `Bearer ${adminToken}`);
+    expect(listed.body.data).toHaveLength(1);
+
+    const deleted = await request(app)
+      .delete(`/api/v1/admin/coupons/${couponId}`)
+      .set('Authorization', `Bearer ${adminToken}`);
+    expect(deleted.status).toBe(200);
+    expect(await Coupon.countDocuments()).toBe(0);
+  });
+
+  it('restocks inventory only after a processed Razorpay refund and ignores webhook retries', async () => {
+    const order = await Order.create({
+      orderNumber: 'ORD-REFUND-TEST',
+      userId: customerUser._id,
+      shippingAddress: { fullName: customerUser.name, city: 'Bengaluru', postalCode: '560001' },
+      items: [{
+        productId: testProduct._id,
+        sku: 'NC-BLK-01',
+        title: testProduct.title,
+        variantAttributes: { Color: 'Black' },
+        unitPrice: 19999,
+        quantity: 2,
+        subtotal: 39998,
+      }],
+      pricing: { itemsTotal: 39998, discountTotal: 0, shippingFee: 0, taxTotal: 0, grandTotal: 39998 },
+      status: ORDER_STATUS.PAID,
+    });
+    await Payment.create({
+      orderId: order._id,
+      razorpayOrderId: 'order_refund_test',
+      razorpayPaymentId: 'pay_refund_test',
+      amount: 3999800,
+      currency: 'INR',
+      status: 'captured',
+      refunds: [],
+      rawWebhookPayloads: [],
+    });
+
+    const response = await request(app)
+      .post(`/api/v1/admin/orders/${order._id}/refund`)
+      .set('Authorization', `Bearer ${adminToken}`)
+      .send({ reason: 'Refund test' });
+
+    expect(response.status).toBe(200);
+    expect(response.body.data.status).toBe(ORDER_STATUS.REFUNDED);
+    expect((await Product.findById(testProduct._id))?.variants[0].stock).toBe(17);
+    const payment = await Payment.findOne({ orderId: order._id });
+    expect(payment?.refunds[0].status).toBe('processed');
+
+    const rawBody = JSON.stringify({
+      event: 'refund.processed',
+      payload: { refund: { entity: { id: payment?.refunds[0].refundId, payment_id: payment?.razorpayPaymentId } } },
+    });
+    const signature = crypto
+      .createHmac('sha256', env.RAZORPAY_WEBHOOK_SECRET || 'placeholder_webhook_secret')
+      .update(rawBody)
+      .digest('hex');
+    const firstWebhook = await request(app)
+      .post('/api/v1/payments/webhook')
+      .set('Content-Type', 'application/json')
+      .set('x-razorpay-signature', signature)
+      .set('x-razorpay-event-id', 'evt_refund_already_processed')
+      .send(rawBody);
+    expect(firstWebhook.status).toBe(200);
+    expect((await Product.findById(testProduct._id))?.variants[0].stock).toBe(17);
+  });
+
   it('allows admin to update order status and records audit history', async () => {
     const order = await Order.create({
       orderNumber: 'ORD-STATUS-TEST',
@@ -207,7 +343,7 @@ describe('Admin Panel, Analytics & Inventory Logs Integration Tests', () => {
         taxTotal: 0,
         grandTotal: 19999,
       },
-      status: ORDER_STATUS.PAID,
+      status: ORDER_STATUS.PROCESSING,
     });
 
     const updateRes = await request(app)

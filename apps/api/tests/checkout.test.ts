@@ -219,7 +219,7 @@ describe('Checkout, Stock Reservation & Payments Integration Tests', () => {
     expect((await StockReservation.findOne({ orderId }))?.status).toBe('released');
   });
 
-  it('verifies payment signature, transitions order to PAID and commits reservation', async () => {
+  it('verifies payment signature but waits for captured webhook before committing stock', async () => {
     const product = await Product.create({
       title: 'Coffee Machine',
       slug: 'coffee-machine',
@@ -264,11 +264,34 @@ describe('Checkout, Stock Reservation & Payments Integration Tests', () => {
       });
 
     expect(verifyRes.status).toBe(200);
-    expect(verifyRes.body.data.order.status).toBe(ORDER_STATUS.PAID);
+    expect(verifyRes.body.data.order.status).toBe(ORDER_STATUS.PENDING_PAYMENT);
+    expect(verifyRes.body.data.paymentPendingWebhook).toBe(true);
 
-    // Verify stock reservation committed
-    const reservation = await StockReservation.findOne({ orderId });
-    expect(reservation?.status).toBe('committed');
+    expect((await StockReservation.findOne({ orderId }))?.status).toBe('active');
+    const payment = await Payment.findOne({ orderId });
+    const rawBody = JSON.stringify({
+      event: 'payment.captured',
+      payload: {
+        payment: {
+          entity: { id: rzpPaymentId, order_id: rzpOrderId, amount: payment?.amount },
+        },
+      },
+    });
+    const webhookSignature = crypto
+      .createHmac('sha256', env.RAZORPAY_WEBHOOK_SECRET || 'placeholder_webhook_secret')
+      .update(rawBody)
+      .digest('hex');
+
+    const captureRes = await request(app)
+      .post('/api/v1/payments/webhook')
+      .set('Content-Type', 'application/json')
+      .set('x-razorpay-signature', webhookSignature)
+      .set('x-razorpay-event-id', 'evt_payment_lifecycle')
+      .send(rawBody);
+
+    expect(captureRes.status).toBe(200);
+    expect((await Order.findById(orderId))?.status).toBe(ORDER_STATUS.PAID);
+    expect((await StockReservation.findOne({ orderId }))?.status).toBe('committed');
   });
 
   it('verifies webhook signatures against raw bytes and processes duplicate event IDs once', async () => {
@@ -296,7 +319,15 @@ describe('Checkout, Stock Reservation & Payments Integration Tests', () => {
     const rawBody = JSON.stringify(
       {
         event: 'payment.captured',
-        payload: { payment: { entity: { id: 'pay_webhook_1', order_id: razorpayOrderId } } },
+        payload: {
+          payment: {
+            entity: {
+              id: 'pay_webhook_1',
+              order_id: razorpayOrderId,
+              amount: Math.round(orderRes.body.data.order.pricing.grandTotal * 100),
+            },
+          },
+        },
       },
       null,
       2
@@ -323,5 +354,49 @@ describe('Checkout, Stock Reservation & Payments Integration Tests', () => {
     expect(duplicateDelivery.status).toBe(200);
     expect(duplicateDelivery.body.data.status).toBe('already_processed');
     expect(await WebhookEvent.countDocuments({ eventId })).toBe(1);
+  });
+
+  it('downloads a real invoice PDF only for the owning customer after payment confirmation', async () => {
+    const product = await Product.create({
+      title: 'Invoice Test Headphones',
+      slug: 'invoice-test-headphones',
+      description: 'Invoice PDF regression product',
+      categoryId: testCategory._id,
+      basePrice: 2500,
+      status: PRODUCT_STATUS.PUBLISHED,
+      variants: [{ sku: 'INVOICE-1', price: 2500, stock: 3, images: [] }],
+    });
+
+    await request(app)
+      .post('/api/v1/cart/items')
+      .set('Authorization', `Bearer ${user1Token}`)
+      .send({ productId: product._id.toString(), sku: 'INVOICE-1', quantity: 1 });
+
+    const checkout = await request(app)
+      .post('/api/v1/checkout/create-order')
+      .set('Authorization', `Bearer ${user1Token}`)
+      .send({ shippingAddress: { fullName: 'Buyer One', addressLine1: '123 Test Road', city: 'Mumbai', state: 'Maharashtra', postalCode: '400001', country: 'IN' } });
+    const orderId = checkout.body.data.order._id;
+
+    const pending = await request(app)
+      .get(`/api/v1/orders/${orderId}/invoice`)
+      .set('Authorization', `Bearer ${user1Token}`);
+    expect(pending.status).toBe(409);
+
+    await Order.updateOne({ _id: orderId }, { $set: { status: ORDER_STATUS.PAID } });
+    const invoice = await request(app)
+      .get(`/api/v1/orders/${orderId}/invoice`)
+      .set('Authorization', `Bearer ${user1Token}`);
+
+    expect(invoice.status).toBe(200);
+    expect(invoice.headers['content-type']).toContain('application/pdf');
+    expect(Buffer.isBuffer(invoice.body)).toBe(true);
+    expect((invoice.body as Buffer).subarray(0, 4).toString()).toBe('%PDF');
+    expect(invoice.headers['content-disposition']).toContain(`${checkout.body.data.order.orderNumber}-invoice.pdf`);
+
+    const otherCustomer = await request(app)
+      .get(`/api/v1/orders/${orderId}/invoice`)
+      .set('Authorization', `Bearer ${user2Token}`);
+    expect(otherCustomer.status).toBe(404);
   });
 });

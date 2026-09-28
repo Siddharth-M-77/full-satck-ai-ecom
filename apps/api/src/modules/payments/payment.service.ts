@@ -7,6 +7,7 @@ import { AppError } from '../../utils/app-error.js';
 import { ORDER_STATUS } from '@shopsense/shared';
 import { env } from '../../config/env.js';
 import { logger } from '../../config/logger.js';
+import { AdminService } from '../admin/admin.service.js';
 
 export class PaymentService {
   static verifySignature(
@@ -37,6 +38,7 @@ export class PaymentService {
     razorpayOrderId: string;
     razorpayPaymentId: string;
     razorpaySignature: string;
+    userId: string;
   }) {
     const isValid = this.verifySignature(
       data.razorpayOrderId,
@@ -55,19 +57,19 @@ export class PaymentService {
       throw AppError.notFound('Payment record not found');
     }
 
+    const order = await Order.findOne({ _id: payment.orderId, userId: data.userId });
+    if (!order) throw AppError.notFound('Payment record not found');
+
+    if (payment.status === 'captured' && order.status === ORDER_STATUS.PAID) {
+      return { success: true, order };
+    }
+
     payment.razorpayPaymentId = data.razorpayPaymentId;
     payment.razorpaySignature = data.razorpaySignature;
-    payment.status = 'captured';
+    payment.status = 'authorized';
     await payment.save();
 
-    // Mark order as PAID and commit stock
-    const order = await OrderService.transitionStatus(
-      payment.orderId.toString(),
-      ORDER_STATUS.PAID,
-      'Payment verified via client SDK'
-    );
-
-    return { success: true, order };
+    return { success: true, order, paymentPendingWebhook: true };
   }
 
   static async processWebhook(rawBody: string, signature: string, deliveryEventId?: string) {
@@ -141,6 +143,9 @@ export class PaymentService {
       if (payload.event === 'payment.captured' && rzpOrderId) {
         const payment = await Payment.findOne({ razorpayOrderId: rzpOrderId });
         if (!payment) throw AppError.notFound('Payment record not found');
+        if (Number(paymentEntity.amount) !== payment.amount) {
+          throw AppError.badRequest('Captured payment amount does not match the order');
+        }
         if (payment.status !== 'captured') {
           await OrderService.transitionStatus(
             payment.orderId.toString(),
@@ -159,8 +164,29 @@ export class PaymentService {
           payment.error = paymentEntity?.error_description || payload;
           await payment.save();
 
-          await OrderService.releaseStock(payment.orderId);
+          await OrderService.transitionStatus(
+            payment.orderId.toString(),
+            ORDER_STATUS.CANCELLED,
+            'Payment failed; reserved inventory was released'
+          );
         }
+      } else if (payload.event === 'refund.processed') {
+        const refundEntity = payload.payload?.refund?.entity;
+        if (!refundEntity?.id || !refundEntity?.payment_id) {
+          throw AppError.badRequest('Refund webhook is missing provider identifiers');
+        }
+
+        const payment = await Payment.findOne({ razorpayPaymentId: refundEntity.payment_id });
+        if (!payment) throw AppError.notFound('Payment record for refund was not found');
+        const refund = payment.refunds.find((entry) => entry.refundId === refundEntity.id);
+        if (!refund) throw AppError.notFound('Refund record was not found');
+        refund.status = 'processed';
+        await payment.save();
+        await AdminService.finalizeRefund(
+          payment.orderId,
+          refundEntity.id,
+          'Refund processed by Razorpay'
+        );
       } else {
         webhookRecord.status = 'ignored';
       }

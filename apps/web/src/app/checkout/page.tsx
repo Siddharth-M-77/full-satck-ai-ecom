@@ -44,6 +44,7 @@ export default function CheckoutPage() {
   const [paymentMethod, setPaymentMethod] = useState<'RAZORPAY' | 'COD'>('RAZORPAY');
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [paymentStatus, setPaymentStatus] = useState<string | null>(null);
 
   // New address state if user has none
   const [fullName, setFullName] = useState('');
@@ -84,6 +85,7 @@ export default function CheckoutPage() {
 
   const handlePlaceOrder = async () => {
     setError(null);
+    setPaymentStatus(null);
     setLoading(true);
 
     try {
@@ -121,7 +123,7 @@ export default function CheckoutPage() {
       const res = await apiFetch<{
         success: boolean;
         data: {
-          order: { _id: string; orderNumber: string };
+          order: { _id: string; orderNumber: string; status: string };
           razorpayOrder?: { id: string; amount: number; currency: string; keyId: string };
         };
       }>('/checkout/create-order', {
@@ -141,9 +143,16 @@ export default function CheckoutPage() {
       }
 
       // 2. Launch Razorpay payment modal
-      if (razorpayOrder && window.Razorpay) {
+      if (!razorpayOrder || !razorpayOrder.keyId) {
+        throw new Error('Razorpay checkout is not configured. Please contact the store.');
+      }
+      if (!window.Razorpay) {
+        throw new Error('Razorpay Checkout could not load. Please refresh and try again.');
+      }
+
+      {
         const options = {
-          key: razorpayOrder.keyId || 'rzp_test_placeholder',
+          key: razorpayOrder.keyId,
           amount: razorpayOrder.amount,
           currency: razorpayOrder.currency,
           name: 'ShopSense AI',
@@ -163,7 +172,9 @@ export default function CheckoutPage() {
           }) {
             // 3. Verify signature on backend
             try {
-              await apiFetch('/payments/verify', {
+              const verification = await apiFetch<{
+                data: { order: { status: string }; paymentPendingWebhook?: boolean };
+              }>('/payments/verify', {
                 method: 'POST',
                 body: JSON.stringify({
                   razorpayOrderId: response.razorpay_order_id,
@@ -172,7 +183,10 @@ export default function CheckoutPage() {
                 }),
               });
               await fetchCart();
-              router.push(`/orders/${order._id}?success=true`);
+              if (verification.data.paymentPendingWebhook) {
+                setPaymentStatus('Payment details verified. Waiting for Razorpay capture confirmation.');
+              }
+              router.push(`/orders/${order._id}`);
             } catch (err: unknown) {
               setError(err instanceof Error ? err.message : 'Verification failed');
             }
@@ -184,9 +198,6 @@ export default function CheckoutPage() {
           setError(resp.error.description || 'Payment failed');
         });
         rzp.open();
-      } else {
-        // Fallback for mock/test environments
-        router.push(`/orders/${order._id}?success=true`);
       }
     } catch (err: unknown) {
       setError(err instanceof Error ? err.message : 'Checkout failed');
@@ -209,6 +220,11 @@ export default function CheckoutPage() {
       {error && (
         <div className="mb-6 p-4 rounded-2xl bg-red-50 border border-red-200 text-red-700 text-sm font-medium">
           {error}
+        </div>
+      )}
+      {paymentStatus && (
+        <div role="status" className="mb-6 rounded-lg border border-amber-200 bg-amber-50 p-4 text-sm font-medium text-amber-800">
+          {paymentStatus}
         </div>
       )}
 

@@ -3,7 +3,7 @@
 import { useState, useEffect, useCallback } from 'react';
 import { useParams } from 'next/navigation';
 import Link from 'next/link';
-import { apiFetch } from '../../../lib/api';
+import { apiDownload, apiFetch } from '../../../lib/api';
 import {
   CheckCircle2,
   Package,
@@ -11,6 +11,7 @@ import {
   CreditCard,
   ArrowRight,
   Clock,
+  Download,
   Sparkles,
 } from 'lucide-react';
 
@@ -56,6 +57,8 @@ export default function OrderSuccessPage() {
 
   const [order, setOrder] = useState<OrderDetail | null>(null);
   const [loading, setLoading] = useState(true);
+  const [invoiceLoading, setInvoiceLoading] = useState(false);
+  const [invoiceError, setInvoiceError] = useState('');
 
   const fetchOrder = useCallback(async () => {
     if (!orderId) return;
@@ -74,6 +77,21 @@ export default function OrderSuccessPage() {
   useEffect(() => {
     fetchOrder();
   }, [fetchOrder]);
+
+  const downloadInvoice = async () => {
+    if (!order) return;
+    setInvoiceLoading(true);
+    setInvoiceError('');
+    try {
+      await apiDownload(`/orders/${order._id}/invoice`, `${order.orderNumber}-invoice.pdf`);
+    } catch (err) {
+      setInvoiceError(err instanceof Error ? err.message : 'Invoice download failed');
+    } finally {
+      setInvoiceLoading(false);
+    }
+  };
+
+  const invoiceReady = ['PAID', 'PROCESSING', 'SHIPPED', 'DELIVERED', 'REFUND_REQUESTED', 'REFUNDED'].includes(order?.status || '');
 
   if (loading) {
     return (
@@ -186,16 +204,26 @@ export default function OrderSuccessPage() {
             <span>₹{order.pricing.taxTotal.toLocaleString('en-IN')}</span>
           </div>
           <div className="flex justify-between text-base font-extrabold text-slate-900 pt-2 border-t border-slate-100">
-            <span>Total Paid</span>
+            <span>Order total</span>
             <span>₹{order.pricing.grandTotal.toLocaleString('en-IN')}</span>
           </div>
         </div>
       </div>
 
-      <div className="flex justify-center">
+      {invoiceError && <p role="alert" className="mb-4 text-center text-sm text-rose-700">{invoiceError}</p>}
+      <div className="flex flex-col justify-center gap-3 sm:flex-row">
+        <button
+          type="button"
+          onClick={downloadInvoice}
+          disabled={!invoiceReady || invoiceLoading}
+          className="inline-flex items-center justify-center gap-2 rounded-lg border border-slate-300 bg-white px-6 py-3 text-sm font-semibold text-slate-800 hover:border-emerald-700 hover:text-emerald-800 disabled:cursor-not-allowed disabled:opacity-50"
+        >
+          <Download className="size-4" />
+          {invoiceLoading ? 'Preparing invoice…' : invoiceReady ? 'Download invoice PDF' : 'Invoice after payment confirmation'}
+        </button>
         <Link
           href="/catalog"
-          className="inline-flex items-center gap-2 px-8 py-3.5 rounded-2xl bg-slate-900 text-white font-bold text-sm hover:bg-slate-800 transition"
+          className="inline-flex items-center justify-center gap-2 rounded-lg bg-slate-900 px-8 py-3.5 text-sm font-bold text-white transition hover:bg-slate-800"
         >
           <span>Continue Shopping</span>
           <ArrowRight className="w-4 h-4" />

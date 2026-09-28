@@ -20,10 +20,19 @@ adminRouter.post('/orders/:id/refund', AdminController.refundOrder);
 adminRouter.get('/products', AdminController.getProducts);
 adminRouter.post('/products', AdminController.createProduct);
 adminRouter.put('/products/:id', AdminController.updateProduct);
+adminRouter.delete('/products/:id', AdminController.deleteProduct);
 adminRouter.post('/inventory/adjust', AdminController.adjustStock);
+adminRouter.get('/inventory/low-stock', AdminController.getLowStock);
 
 // Customers
 adminRouter.get('/customers', AdminController.getCustomers);
+adminRouter.patch('/customers/:id/block', AdminController.setCustomerBlocked);
+
+// Coupons
+adminRouter.get('/coupons', AdminController.getCoupons);
+adminRouter.post('/coupons', AdminController.createCoupon);
+adminRouter.put('/coupons/:id', AdminController.updateCoupon);
+adminRouter.delete('/coupons/:id', AdminController.deleteCoupon);
 
 // Logs & Auditing
 adminRouter.get('/audit-logs', AdminController.getAuditLogs);

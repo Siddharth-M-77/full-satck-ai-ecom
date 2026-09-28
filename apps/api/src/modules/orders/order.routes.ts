@@ -15,6 +15,7 @@ router.post('/payments/webhook', OrderController.handleWebhook);
 
 // Customer order tracking & history (Auth required)
 router.get('/orders', authenticate, OrderController.getOrders);
+router.get('/orders/:id/invoice', authenticate, OrderController.downloadInvoice);
 router.get('/orders/:id', authenticate, OrderController.getOrderById);
 
 export const orderRouter = router;

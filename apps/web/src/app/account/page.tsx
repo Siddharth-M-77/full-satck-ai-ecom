@@ -2,6 +2,7 @@
 
 import { useState, useEffect, useCallback } from 'react';
 import { useRouter } from 'next/navigation';
+import Link from 'next/link';
 import { useAuthStore } from '../../stores/auth.store';
 import { apiFetch } from '../../lib/api';
 import {
@@ -14,6 +15,7 @@ import {
   Home,
   ShieldCheck,
   Building,
+  ReceiptText,
 } from 'lucide-react';
 
 interface Address {
@@ -190,6 +192,13 @@ export default function AccountPage() {
                 </span>
               </div>
             </div>
+            <Link
+              href="/account/orders"
+              className="mt-5 flex items-center justify-between border-t border-slate-100 pt-4 text-sm font-semibold text-slate-800 transition hover:text-emerald-800"
+            >
+              <span className="inline-flex items-center gap-2"><ReceiptText className="size-4 text-emerald-700" />My orders and invoices</span>
+              <span aria-hidden="true">→</span>
+            </Link>
           </div>
         </div>
 

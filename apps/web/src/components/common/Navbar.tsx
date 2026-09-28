@@ -3,7 +3,7 @@
 import Link from 'next/link';
 import { useAuthStore } from '../../stores/auth.store';
 import { useCartStore } from '../../stores/cart.store';
-import { Sparkles, ShoppingBag, Heart, Search, User, LogOut, MapPin } from 'lucide-react';
+import { Sparkles, ShoppingBag, Heart, Search, User, LogOut, MapPin, ReceiptText } from 'lucide-react';
 import { useState, useEffect } from 'react';
 
 export function Navbar() {
@@ -125,6 +125,15 @@ export function Navbar() {
                   >
                     <User className="w-4 h-4 text-slate-400" />
                     Account & Profile
+                  </Link>
+
+                  <Link
+                    href="/account/orders"
+                    onClick={() => setDropdownOpen(false)}
+                    className="flex items-center gap-2.5 px-4 py-2.5 text-sm text-slate-700 hover:bg-slate-50 transition"
+                  >
+                    <ReceiptText className="w-4 h-4 text-slate-400" />
+                    My Orders
                   </Link>
 
                   <Link

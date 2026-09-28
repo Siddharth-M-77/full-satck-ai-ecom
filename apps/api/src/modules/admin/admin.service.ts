@@ -11,8 +11,28 @@ import { AppError } from '../../utils/app-error.js';
 import { ORDER_STATUS, USER_ROLES } from '@shopsense/shared';
 import { getRazorpayClient } from '../../config/razorpay.js';
 import { logger } from '../../config/logger.js';
+import { env } from '../../config/env.js';
 
 export class AdminService {
+  static async getLowStock(threshold = 5) {
+    const products = await Product.find({ 'variants.stock': { $lte: threshold } })
+      .select('title slug variants')
+      .lean();
+
+    return products.flatMap((product) =>
+      product.variants
+        .filter((variant) => variant.stock <= threshold)
+        .map((variant) => ({
+          productId: product._id,
+          title: product.title,
+          slug: product.slug,
+          sku: variant.sku,
+          stock: variant.stock,
+          threshold,
+        }))
+    );
+  }
+
   static async getDashboardAnalytics() {
     const thirtyDaysAgo = new Date();
     thirtyDaysAgo.setDate(thirtyDaysAgo.getDate() - 30);
@@ -21,7 +41,7 @@ export class AdminService {
     sevenDaysAgo.setDate(sevenDaysAgo.getDate() - 7);
 
     // 1. Revenue & Orders Aggregation
-    const [salesSummary, recentOrders, lowStockProducts, topProducts] =
+    const [salesSummary, monthSalesSummary, recentOrders, lowStockItems, topProducts] =
       await Promise.all([
         Order.aggregate([
           { $match: { status: { $in: [ORDER_STATUS.PAID, ORDER_STATUS.PROCESSING, ORDER_STATUS.SHIPPED, ORDER_STATUS.DELIVERED] } } },
@@ -35,12 +55,19 @@ export class AdminService {
           },
         ]),
 
+        Order.aggregate([
+          {
+            $match: {
+              createdAt: { $gte: thirtyDaysAgo },
+              status: { $in: [ORDER_STATUS.PAID, ORDER_STATUS.PROCESSING, ORDER_STATUS.SHIPPED, ORDER_STATUS.DELIVERED] },
+            },
+          },
+          { $group: { _id: null, revenue: { $sum: '$pricing.grandTotal' }, orders: { $sum: 1 } } },
+        ]),
+
         Order.find().sort({ createdAt: -1 }).limit(8).lean(),
 
-        Product.find({ 'variants.stock': { $lte: 5 } })
-          .select('title slug basePrice variants')
-          .limit(8)
-          .lean(),
+        this.getLowStock(5),
 
         Product.find({ salesCount: { $gt: 0 } })
           .sort({ salesCount: -1 })
@@ -75,14 +102,14 @@ export class AdminService {
 
     return {
       overview: {
-        totalRevenue: metrics.totalRevenue,
+        totalRevenue: monthSalesSummary[0]?.revenue || 0,
         totalOrders: metrics.totalOrders,
         avgOrderValue: Math.round(metrics.avgOrderValue),
-        lowStockCount: lowStockProducts.length,
+        lowStockCount: lowStockItems.length,
       },
       salesTrend,
       recentOrders,
-      lowStockProducts,
+      lowStockProducts: lowStockItems,
       topProducts,
     };
   }
@@ -142,45 +169,111 @@ export class AdminService {
     }
 
     const payment = await Payment.findOne({ orderId: order._id });
+    if (!payment || !payment.razorpayPaymentId || payment.status !== 'captured') {
+      throw AppError.badRequest('A captured Razorpay payment is required to issue a refund');
+    }
 
-    // Restock items
-    for (const item of order.items) {
-      await Product.updateOne(
-        { _id: item.productId, 'variants.sku': item.sku },
-        { $inc: { 'variants.$.stock': item.quantity } }
+    if (payment.refunds.some((refund) => refund.status !== 'failed')) {
+      throw AppError.conflict('A refund has already been requested for this payment');
+    }
+
+    let refund: { id: string; status: string };
+    if (env.NODE_ENV === 'test') {
+      refund = { id: `rfnd_test_${Date.now()}`, status: 'processed' };
+    } else {
+      const razorpay = getRazorpayClient();
+      const razorpayRefund = await razorpay.payments.refund(payment.razorpayPaymentId, {
+        amount: payment.amount,
+        notes: { reason: reason || 'Administrator refund', orderNumber: order.orderNumber },
+      });
+      refund = { id: razorpayRefund.id, status: razorpayRefund.status };
+    }
+
+    payment.refunds.push({
+      refundId: refund.id,
+      amount: payment.amount,
+      status: refund.status,
+      createdAt: new Date(),
+    });
+    await payment.save();
+
+    if (order.status === ORDER_STATUS.PAID) {
+      await OrderService.transitionStatus(
+        order.id,
+        ORDER_STATUS.REFUND_REQUESTED,
+        reason || 'Full refund requested by administrator',
+        adminUserId
       );
+    }
+
+    const updatedOrder = refund.status === 'processed'
+      ? await this.finalizeRefund(order.id, refund.id, reason, adminUserId, adminEmail)
+      : await Order.findById(order.id);
+
+    if (adminUserId && adminEmail) {
+      await AuditLog.create({
+        userId: new mongoose.Types.ObjectId(adminUserId),
+        userEmail: adminEmail,
+        action: refund.status === 'processed' ? 'REFUND_ISSUED' : 'REFUND_REQUESTED',
+        resourceType: 'Order',
+        resourceId: order.orderNumber,
+        diff: { status: refund.status, amount: payment.amount, refundId: refund.id },
+      });
+    }
+
+    return updatedOrder;
+  }
+
+  static async finalizeRefund(
+    orderId: string | mongoose.Types.ObjectId,
+    refundId: string,
+    reason?: string,
+    adminUserId?: string,
+    adminEmail?: string
+  ) {
+    const order = await Order.findById(orderId);
+    if (!order) throw AppError.notFound('Order not found');
+    const payment = await Payment.findOne({ orderId: order._id });
+    if (!payment) throw AppError.notFound('Payment record not found');
+
+    const refund = payment.refunds.find((entry) => entry.refundId === refundId);
+    if (!refund) throw AppError.notFound('Refund record not found');
+    if (order.status === ORDER_STATUS.REFUNDED) return order;
+    if (refund.status !== 'processed') return order;
+
+    for (const item of order.items) {
+      const product = await Product.findOneAndUpdate(
+        { _id: item.productId, 'variants.sku': item.sku },
+        { $inc: { 'variants.$.stock': item.quantity } },
+        { new: true }
+      );
+      const variant = product?.variants.find((entry) => entry.sku === item.sku);
+      const newStock = variant?.stock ?? item.quantity;
 
       await InventoryLog.create({
         productId: item.productId,
         sku: item.sku,
         changeType: 'REFUND_RESTOCK',
-        previousStock: 0,
+        previousStock: newStock - item.quantity,
         changeQuantity: item.quantity,
-        newStock: item.quantity,
+        newStock,
         orderId: order._id,
         notes: `Refund restock for order ${order.orderNumber}`,
       });
     }
 
-    if (payment) {
-      payment.status = 'refunded';
-      payment.refunds.push({
-        refundId: `rfnd_${Date.now()}`,
-        amount: payment.amount,
-        status: 'processed',
-        createdAt: new Date(),
-      });
-      await payment.save();
-    }
+    payment.status = 'refunded';
+    await payment.save();
 
-    order.status = ORDER_STATUS.REFUNDED;
-    order.statusHistory.push({
-      status: ORDER_STATUS.REFUNDED,
-      timestamp: new Date(),
-      comment: reason || 'Refund issued by administrator',
-      updatedBy: adminUserId ? new mongoose.Types.ObjectId(adminUserId) : undefined,
-    });
-    await order.save();
+    if (order.status === ORDER_STATUS.PAID) {
+      await OrderService.transitionStatus(order.id, ORDER_STATUS.REFUND_REQUESTED, reason);
+    }
+    const refundedOrder = await OrderService.transitionStatus(
+      order.id,
+      ORDER_STATUS.REFUNDED,
+      reason || 'Refund processed by Razorpay',
+      adminUserId
+    );
 
     if (adminUserId && adminEmail) {
       await AuditLog.create({
@@ -189,10 +282,10 @@ export class AdminService {
         action: 'REFUND_ISSUED',
         resourceType: 'Order',
         resourceId: order.orderNumber,
-        diff: { status: ORDER_STATUS.REFUNDED, amount: order.pricing.grandTotal },
+        diff: { status: ORDER_STATUS.REFUNDED, amount: refund.amount, refundId },
       });
     }
 
-    return order;
+    return refundedOrder;
   }
 }

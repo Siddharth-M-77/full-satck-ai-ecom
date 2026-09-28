@@ -32,6 +32,10 @@ const envSchema = z.object({
 
   RESEND_API_KEY: z.string().optional(),
   EMAIL_FROM: z.string().default('orders@devsidd.cloud'),
+  STORE_LEGAL_NAME: z.string().default('ShopSense AI'),
+  STORE_ADDRESS: z.string().optional(),
+  STORE_GSTIN: z.string().optional(),
+  STORE_SUPPORT_EMAIL: z.string().optional(),
 });
 
 const parsedEnv = envSchema.safeParse(process.env);
