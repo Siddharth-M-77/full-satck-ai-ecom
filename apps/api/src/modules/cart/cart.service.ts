@@ -2,6 +2,8 @@ import mongoose from 'mongoose';
 import { Cart, ICart } from './cart.model.js';
 import { Product } from '../catalog/product.model.js';
 import { AppError } from '../../utils/app-error.js';
+import { CouponService } from '../coupons/coupon.service.js';
+import { computePricing } from '../orders/pricing.js';
 
 export class CartService {
   private static async findCart(userId?: string, sessionId?: string): Promise<ICart | null> {
@@ -64,25 +66,48 @@ export class CartService {
       });
     }
 
-    const discountTotal = cart.appliedCoupon?.discountAmount || 0;
-    const shippingFee = itemsTotal > 999 || itemsTotal === 0 ? 0 : 99;
-    const taxTotal = Math.round(itemsTotal * 0.18); // 18% GST estimate
-    const grandTotal = Math.max(0, itemsTotal - discountTotal + shippingFee);
+    // Re-check the coupon on every read: the basket may have dropped below the minimum,
+    // or the coupon may have expired since it was applied.
+    let discountTotal = 0;
+    let couponError: string | undefined;
+    const couponCode = cart.appliedCoupon?.code;
+    if (couponCode) {
+      try {
+        discountTotal = (await CouponService.evaluate(couponCode, itemsTotal, userId)).discountAmount;
+      } catch (err) {
+        couponError = err instanceof Error ? err.message : 'Coupon can no longer be applied';
+      }
+    }
 
     return {
       _id: cart._id,
       userId: cart.userId,
       sessionId: cart.sessionId,
       items: populatedItems,
-      appliedCoupon: cart.appliedCoupon,
-      pricing: {
-        itemsTotal,
-        discountTotal,
-        shippingFee,
-        taxTotal,
-        grandTotal,
-      },
+      appliedCoupon: couponCode ? { code: couponCode, discountAmount: discountTotal } : null,
+      couponError,
+      pricing: computePricing(itemsTotal, discountTotal),
     };
+  }
+
+  static async applyCoupon(userId?: string, sessionId?: string, code?: string) {
+    if (!code || typeof code !== 'string') throw AppError.badRequest('Enter a coupon code');
+    const cart = await this.findCart(userId, sessionId);
+    if (!cart || cart.items.length === 0) throw AppError.badRequest('Add something to your cart before applying a coupon');
+
+    const current = await this.getCart(userId, sessionId);
+    const { coupon, discountAmount } = await CouponService.evaluate(code, current.pricing.itemsTotal, userId);
+    cart.appliedCoupon = { code: coupon.code, discountAmount };
+    await cart.save();
+    return this.getCart(userId, sessionId);
+  }
+
+  static async removeCoupon(userId?: string, sessionId?: string) {
+    const cart = await this.findCart(userId, sessionId);
+    if (!cart) throw AppError.notFound('Cart not found');
+    cart.appliedCoupon = undefined;
+    await cart.save();
+    return this.getCart(userId, sessionId);
   }
 
   static async addItem(
@@ -193,6 +218,10 @@ export class CartService {
       } else {
         userCart.items.push(gItem);
       }
+    }
+
+    if (!userCart.appliedCoupon?.code && guestCart.appliedCoupon?.code) {
+      userCart.appliedCoupon = guestCart.appliedCoupon;
     }
 
     await userCart.save();

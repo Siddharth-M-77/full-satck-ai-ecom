@@ -5,4 +5,59 @@
 body {
   margin: 0;
   min-height: 100vh;
+  background: #f4f6f3;
+  color: #0f172a;
+  font-family: Inter, system-ui, -apple-system, 'Segoe UI', sans-serif;
+  -webkit-font-smoothing: antialiased;
+}
+
+@layer components {
+  .card {
+    @apply min-w-0 rounded-xl border border-slate-200/80 bg-white shadow-[0_1px_2px_rgba(15,23,42,0.04)];
+  }
+  .btn {
+    @apply inline-flex items-center justify-center gap-1.5 rounded-lg px-3.5 py-2 text-xs font-semibold transition focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-600/40 disabled:cursor-not-allowed disabled:opacity-50;
+  }
+  .btn-primary {
+    @apply btn bg-emerald-700 text-white shadow-sm hover:bg-emerald-800;
+  }
+  .btn-secondary {
+    @apply btn border border-slate-200 bg-white text-slate-700 hover:border-slate-300 hover:bg-slate-50;
+  }
+  .btn-danger {
+    @apply btn border border-rose-200 bg-white text-rose-700 hover:bg-rose-50;
+  }
+  .btn-ghost {
+    @apply btn px-2 py-1.5 text-slate-600 hover:bg-slate-100;
+  }
+  .icon-btn {
+    @apply grid size-8 shrink-0 place-items-center rounded-lg text-slate-500 transition hover:bg-slate-100 hover:text-slate-900 disabled:cursor-not-allowed disabled:opacity-40;
+  }
+  .input {
+    @apply block w-full rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm text-slate-900 outline-none transition placeholder:text-slate-400 focus:border-emerald-600 focus:ring-2 focus:ring-emerald-600/15;
+  }
+  .label {
+    @apply block text-[11px] font-semibold text-slate-600;
+  }
+  .pill {
+    @apply inline-flex items-center gap-1 whitespace-nowrap rounded-full px-2 py-0.5 text-[10px] font-semibold;
+  }
+  .search-box {
+    @apply flex min-w-0 items-center gap-2 rounded-lg border border-slate-200 bg-white px-3 focus-within:border-emerald-600 focus-within:ring-2 focus-within:ring-emerald-600/15;
+  }
+  .data-table {
+    @apply w-full text-left text-xs;
+  }
+  .data-table thead {
+    @apply bg-slate-50 text-[10px] font-semibold uppercase tracking-wide text-slate-500;
+  }
+  .data-table th {
+    @apply px-4 py-3;
+  }
+  .data-table td {
+    @apply px-4 py-3 align-middle;
+  }
+  .data-table tbody tr {
+    @apply border-t border-slate-100 transition hover:bg-slate-50/70;
+  }
 }

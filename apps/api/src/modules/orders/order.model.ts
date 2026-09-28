@@ -45,6 +45,7 @@ export interface IOrder extends Document {
     deliveredAt?: Date;
   };
   invoiceUrl?: string;
+  couponCode?: string;
   cancellationReason?: string;
   createdAt: Date;
   updatedAt: Date;
@@ -108,6 +109,7 @@ const orderSchema = new Schema<IOrder>(
       deliveredAt: { type: Date },
     },
     invoiceUrl: { type: String },
+    couponCode: { type: String, index: true },
     cancellationReason: { type: String },
   },
   {

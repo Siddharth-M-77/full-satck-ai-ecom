@@ -10,6 +10,8 @@ router.post('/items', optionalAuthenticate, CartController.addItem);
 router.patch('/items/:sku', optionalAuthenticate, CartController.updateQuantity);
 router.delete('/items/:sku', optionalAuthenticate, CartController.removeItem);
 router.post('/merge', authenticate, CartController.mergeCart);
+router.post('/coupon', optionalAuthenticate, CartController.applyCoupon);
+router.delete('/coupon', optionalAuthenticate, CartController.removeCoupon);
 
 // Wishlist routes (authenticated users only)
 router.get('/wishlist', authenticate, CartController.getWishlist);

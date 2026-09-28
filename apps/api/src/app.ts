@@ -17,6 +17,7 @@ import { catalogRouter } from './modules/catalog/catalog.routes.js';
 import { cartRouter } from './modules/cart/cart.routes.js';
 import { orderRouter } from './modules/orders/order.routes.js';
 import { adminRouter } from './modules/admin/admin.routes.js';
+import { couponRouter } from './modules/coupons/coupon.routes.js';
 import { USER_ROLES } from '@shopsense/shared';
 
 export function createApp(): Express {
@@ -102,6 +103,7 @@ export function createApp(): Express {
   app.use('/api/v1/users', userRouter);
   app.use('/api/v1/catalog', catalogRouter);
   app.use('/api/v1/cart', cartRouter);
+  app.use('/api/v1/coupons', couponRouter);
   app.use('/api/v1', orderRouter);
   app.use('/api/v1/admin', adminRouter);
 

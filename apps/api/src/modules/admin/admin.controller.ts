@@ -12,6 +12,14 @@ import { ORDER_STATUS } from '@shopsense/shared';
 import { Coupon } from '../coupons/coupon.model.js';
 import { OrderService } from '../orders/order.service.js';
 import { InvoiceService } from '../orders/invoice.service.js';
+import { Payment } from '../payments/payment.model.js';
+
+const couponFields = [
+  'code', 'discountType', 'discountValue', 'minOrderValue', 'maxDiscount',
+  'startDate', 'endDate', 'usageLimitGlobal', 'usageLimitPerUser', 'isActive', 'showInOffers',
+];
+const pickCouponFields = (body: Record<string, unknown>) =>
+  Object.fromEntries(couponFields.filter((key) => body[key] !== undefined).map((key) => [key, body[key]]));
 
 export class AdminController {
   static async getDashboard(req: Request, res: Response, next: NextFunction) {
@@ -58,6 +66,24 @@ export class AdminController {
           pages: Math.ceil(total / limit),
         },
       });
+    } catch (err) {
+      next(err);
+    }
+  }
+
+  static async getOrderById(req: Request, res: Response, next: NextFunction) {
+    try {
+      const order = await Order.findById(String(req.params.id))
+        .populate('statusHistory.updatedBy', 'name email')
+        .lean();
+      if (!order) throw AppError.notFound('Order not found');
+
+      const [customer, payment] = await Promise.all([
+        User.findById(order.userId).select('name email phone isBlocked createdAt').lean(),
+        Payment.findOne({ orderId: order._id }).select('-rawWebhookPayloads -razorpaySignature').lean(),
+      ]);
+
+      res.json({ success: true, data: { ...order, customer, payment } });
     } catch (err) {
       next(err);
     }
@@ -356,7 +382,7 @@ export class AdminController {
 
   static async createCoupon(req: Request, res: Response, next: NextFunction) {
     try {
-      const coupon = await Coupon.create(req.body);
+      const coupon = await Coupon.create(pickCouponFields(req.body));
       await AuditLog.create({
         userId: req.user?._id,
         userEmail: req.user?.email || 'admin',
@@ -373,11 +399,11 @@ export class AdminController {
 
   static async updateCoupon(req: Request, res: Response, next: NextFunction) {
     try {
-      const coupon = await Coupon.findByIdAndUpdate(String(req.params.id), req.body, {
-        new: true,
-        runValidators: true,
-      });
+      const coupon = await Coupon.findById(String(req.params.id));
       if (!coupon) throw AppError.notFound('Coupon not found');
+      coupon.set(pickCouponFields(req.body));
+      if (coupon.endDate <= coupon.startDate) throw AppError.badRequest('Coupon end date must be after its start date');
+      await coupon.save();
       await AuditLog.create({
         userId: req.user?._id,
         userEmail: req.user?.email || 'admin',

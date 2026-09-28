@@ -37,7 +37,7 @@ declare global {
 export default function CheckoutPage() {
   const router = useRouter();
   const { user, isAuthenticated } = useAuthStore();
-  const { items, pricing, fetchCart } = useCartStore();
+  const { items, pricing, appliedCoupon, fetchCart } = useCartStore();
 
   const [addresses, setAddresses] = useState<SavedAddress[]>([]);
   const [selectedAddressId, setSelectedAddressId] = useState<string>('');
@@ -385,6 +385,12 @@ export default function CheckoutPage() {
                   ₹{pricing.itemsTotal.toLocaleString('en-IN')}
                 </span>
               </div>
+              {pricing.discountTotal > 0 && (
+                <div className="flex justify-between font-semibold text-emerald-700">
+                  <span>Coupon {appliedCoupon?.code}</span>
+                  <span>−₹{pricing.discountTotal.toLocaleString('en-IN')}</span>
+                </div>
+              )}
               <div className="flex justify-between">
                 <span>Shipping</span>
                 <span>{pricing.shippingFee === 0 ? 'FREE' : `₹${pricing.shippingFee}`}</span>

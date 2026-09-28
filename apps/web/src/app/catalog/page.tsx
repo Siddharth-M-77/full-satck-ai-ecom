@@ -1,478 +1,241 @@
 'use client';
 
-import { useState, useEffect, useCallback } from 'react';
-import Link from 'next/link';
-import Image from 'next/image';
-import { useRouter } from 'next/navigation';
+import { Suspense, useEffect, useMemo, useState } from 'react';
+import { usePathname, useRouter, useSearchParams } from 'next/navigation';
+import { ChevronLeft, ChevronRight, LayoutGrid, List, Search, SlidersHorizontal, Star, X } from 'lucide-react';
 import { apiFetch } from '../../lib/api';
-import { useCartStore } from '../../stores/cart.store';
-import { useAuthStore } from '../../stores/auth.store';
-import {
-  Heart,
-  Search,
-  SlidersHorizontal,
-  Star,
-  ShoppingBag,
-  Check,
-  ChevronLeft,
-  ChevronRight,
-  Sparkles,
-} from 'lucide-react';
+import { inr, type ProductSummary } from '../../lib/catalog';
+import { ProductCard, ProductCardSkeleton } from '../../components/product/ProductCard';
 
-interface ProductItem {
-  _id: string;
-  title: string;
-  slug: string;
-  description: string;
-  basePrice: number;
-  compareAtPrice?: number;
-  categoryId: { _id: string; name: string; slug: string };
-  brandId?: { _id: string; name: string; slug: string };
-  rating: { average: number; count: number };
-  variants: Array<{
-    sku: string;
-    price: number;
-    compareAtPrice?: number;
-    stock: number;
-    images: Array<{ url: string }>;
-  }>;
+type Facet = { _id: string; name: string; slug: string };
+type Filters = { search: string; category: string; brand: string; minPrice: string; maxPrice: string; rating: string; inStock: boolean; sort: string; page: number };
+
+const sortOptions = [
+  ['newest', 'Newest first'],
+  ['popular', 'Most popular'],
+  ['price_asc', 'Price: low to high'],
+  ['price_desc', 'Price: high to low'],
+] as const;
+const pricePresets: Array<[string, string, string]> = [['', '999', 'Under ₹999'], ['1000', '4999', '₹1,000 – ₹4,999'], ['5000', '19999', '₹5,000 – ₹19,999'], ['20000', '', '₹20,000+']];
+const PAGE_SIZE = 12;
+
+function readFilters(params: URLSearchParams): Filters {
+  return {
+    search: params.get('search') || '',
+    category: params.get('category') || '',
+    brand: params.get('brand') || '',
+    minPrice: params.get('minPrice') || '',
+    maxPrice: params.get('maxPrice') || '',
+    rating: params.get('rating') || '',
+    inStock: params.get('inStock') === 'true',
+    sort: params.get('sort') || 'newest',
+    page: Math.max(1, Number(params.get('page')) || 1),
+  };
 }
 
-interface CategoryItem {
-  _id: string;
-  name: string;
-  slug: string;
+function toQuery(filters: Filters) {
+  const params = new URLSearchParams();
+  if (filters.search) params.set('search', filters.search);
+  if (filters.category) params.set('category', filters.category);
+  if (filters.brand) params.set('brand', filters.brand);
+  if (filters.minPrice) params.set('minPrice', filters.minPrice);
+  if (filters.maxPrice) params.set('maxPrice', filters.maxPrice);
+  if (filters.rating) params.set('rating', filters.rating);
+  if (filters.inStock) params.set('inStock', 'true');
+  if (filters.sort !== 'newest') params.set('sort', filters.sort);
+  if (filters.page > 1) params.set('page', String(filters.page));
+  return params;
 }
 
 export default function CatalogPage() {
-  const router = useRouter();
-  const { addItem } = useCartStore();
-  const { isAuthenticated } = useAuthStore();
+  return <Suspense fallback={<div className="mx-auto max-w-7xl px-4 py-10"><div className="grid grid-cols-2 gap-6 lg:grid-cols-4">{Array.from({ length: 8 }, (_, index) => <ProductCardSkeleton key={index} />)}</div></div>}><Catalog /></Suspense>;
+}
 
-  const [products, setProducts] = useState<ProductItem[]>([]);
-  const [categories, setCategories] = useState<CategoryItem[]>([]);
-  const [loading, setLoading] = useState(true);
+function Catalog() {
+  const router = useRouter();
+  const pathname = usePathname();
+  const searchParams = useSearchParams();
+  const filters = useMemo(() => readFilters(new URLSearchParams(searchParams.toString())), [searchParams]);
+
+  const [products, setProducts] = useState<ProductSummary[]>([]);
   const [total, setTotal] = useState(0);
   const [totalPages, setTotalPages] = useState(1);
-  const [page, setPage] = useState(1);
+  const [loading, setLoading] = useState(true);
+  const [categories, setCategories] = useState<Facet[]>([]);
+  const [brands, setBrands] = useState<Facet[]>([]);
+  const [searchDraft, setSearchDraft] = useState(filters.search);
+  const [priceDraft, setPriceDraft] = useState({ min: filters.minPrice, max: filters.maxPrice });
+  const [layout, setLayout] = useState<'grid' | 'list'>('grid');
+  const [filtersOpen, setFiltersOpen] = useState(false);
 
-  // Filters
-  const [selectedCategory, setSelectedCategory] = useState<string>('');
-  const [search, setSearch] = useState('');
-  const [minPrice, setMinPrice] = useState<string>('');
-  const [maxPrice, setMaxPrice] = useState<string>('');
-  const [inStock, setInStock] = useState(false);
-  const [sort, setSort] = useState<string>('newest');
-
-  // Quick-add state tracking
-  const [addingSku, setAddingSku] = useState<string | null>(null);
-  const [savedProductIds, setSavedProductIds] = useState<string[]>([]);
-  const [savingProductId, setSavingProductId] = useState<string | null>(null);
-
-  useEffect(() => {
-    if (!isAuthenticated) {
-      setSavedProductIds([]);
-      return;
-    }
-
-    apiFetch<{ data: { productIds: Array<{ _id: string }> } }>('/cart/wishlist')
-      .then((res) => setSavedProductIds(res.data.productIds.map((product) => product._id)))
-      .catch(() => setSavedProductIds([]));
-  }, [isAuthenticated]);
+  const update = (changes: Partial<Filters>) => {
+    // Any filter change starts again from page one unless the page itself is what changed.
+    const next = { ...filters, page: 1, ...changes };
+    const query = toQuery(next).toString();
+    router.replace(query ? `${pathname}?${query}` : pathname, { scroll: false });
+    if (changes.page) window.scrollTo({ top: 0, behavior: 'smooth' });
+  };
 
   useEffect(() => {
-    const params = new URLSearchParams(window.location.search);
-    setSearch(params.get('search') || '');
-    setSelectedCategory(params.get('category') || '');
-    setSort(params.get('sort') || 'newest');
+    Promise.all([apiFetch<{ data: Facet[] }>('/catalog/categories'), apiFetch<{ data: Facet[] }>('/catalog/brands')])
+      .then(([categoryRes, brandRes]) => { setCategories(categoryRes.data); setBrands(brandRes.data); })
+      .catch(() => undefined);
+    try { if (localStorage.getItem('shopsense_catalog_layout') === 'list') setLayout('list'); } catch { /* storage unavailable */ }
   }, []);
 
-  const fetchCatalogData = useCallback(async () => {
-    setLoading(true);
-    try {
-      const params = new URLSearchParams();
-      params.set('page', page.toString());
-      params.set('limit', '12');
-      if (selectedCategory) params.set('category', selectedCategory);
-      if (search) params.set('search', search);
-      if (minPrice) params.set('minPrice', minPrice);
-      if (maxPrice) params.set('maxPrice', maxPrice);
-      if (inStock) params.set('inStock', 'true');
-      if (sort) params.set('sort', sort);
+  useEffect(() => { setSearchDraft(filters.search); setPriceDraft({ min: filters.minPrice, max: filters.maxPrice }); }, [filters.search, filters.minPrice, filters.maxPrice]);
 
-      const [prodRes, catRes] = await Promise.all([
-        apiFetch<{
-          success: boolean;
-          data: {
-            products: ProductItem[];
-            pagination: { total: number; totalPages: number };
-          };
-        }>(`/catalog/products?${params.toString()}`),
-        categories.length === 0
-          ? apiFetch<{ success: boolean; data: CategoryItem[] }>('/catalog/categories')
-          : Promise.resolve({ success: true, data: categories }),
-      ]);
-
-      setProducts(prodRes.data.products);
-      setTotal(prodRes.data.pagination.total);
-      setTotalPages(prodRes.data.pagination.totalPages);
-      if (categories.length === 0) {
-        setCategories(catRes.data);
-      }
-    } catch {
-      // Graceful fallback
-    } finally {
-      setLoading(false);
-    }
-  }, [page, selectedCategory, search, minPrice, maxPrice, inStock, sort, categories]);
+  // Search as you type, once typing pauses.
+  useEffect(() => {
+    if (searchDraft === filters.search) return;
+    const timer = window.setTimeout(() => update({ search: searchDraft.trim() }), 400);
+    return () => window.clearTimeout(timer);
+    // Only the draft should restart the debounce; `update` is rebuilt every render.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [searchDraft]);
 
   useEffect(() => {
-    fetchCatalogData();
-  }, [fetchCatalogData]);
+    let cancelled = false;
+    setLoading(true);
+    const params = toQuery(filters);
+    params.set('limit', String(PAGE_SIZE));
+    params.set('page', String(filters.page));
+    params.set('sort', filters.sort);
+    apiFetch<{ data: { products: ProductSummary[]; pagination: { total: number; totalPages: number } } }>(`/catalog/products?${params}`)
+      .then((res) => { if (cancelled) return; setProducts(res.data.products); setTotal(res.data.pagination.total); setTotalPages(Math.max(1, res.data.pagination.totalPages)); })
+      .catch(() => { if (!cancelled) { setProducts([]); setTotal(0); } })
+      .finally(() => { if (!cancelled) setLoading(false); });
+    return () => { cancelled = true; };
+  }, [filters]);
 
-  const handleQuickAdd = async (product: ProductItem) => {
-    const primaryVariant = product.variants?.[0];
-    if (!primaryVariant) return;
+  useEffect(() => {
+    document.body.style.overflow = filtersOpen ? 'hidden' : '';
+    return () => { document.body.style.overflow = ''; };
+  }, [filtersOpen]);
 
-    setAddingSku(primaryVariant.sku);
-    try {
-      await addItem(product._id, primaryVariant.sku, 1);
-      setTimeout(() => setAddingSku(null), 1200);
-    } catch (err: unknown) {
-      setAddingSku(null);
-      if (err instanceof Error) alert(err.message);
-    }
+  const setLayoutPersisted = (value: 'grid' | 'list') => {
+    setLayout(value);
+    try { localStorage.setItem('shopsense_catalog_layout', value); } catch { /* storage unavailable */ }
   };
 
-  const handleSaveProduct = async (productId: string) => {
-    if (!isAuthenticated) {
-      router.push('/login');
-      return;
-    }
+  const categoryName = categories.find((item) => item.slug === filters.category)?.name;
+  const brandName = brands.find((item) => item.slug === filters.brand)?.name;
+  const chips = [
+    filters.search && { label: `“${filters.search}”`, clear: { search: '' } },
+    filters.category && { label: categoryName || filters.category, clear: { category: '' } },
+    filters.brand && { label: brandName || filters.brand, clear: { brand: '' } },
+    (filters.minPrice || filters.maxPrice) && { label: filters.minPrice && filters.maxPrice ? `${inr(Number(filters.minPrice))} – ${inr(Number(filters.maxPrice))}` : filters.minPrice ? `Over ${inr(Number(filters.minPrice))}` : `Under ${inr(Number(filters.maxPrice))}`, clear: { minPrice: '', maxPrice: '' } },
+    filters.rating && { label: `${filters.rating}★ & up`, clear: { rating: '' } },
+    filters.inStock && { label: 'In stock', clear: { inStock: false } },
+  ].filter(Boolean) as Array<{ label: string; clear: Partial<Filters> }>;
+  const clearAll = () => update({ search: '', category: '', brand: '', minPrice: '', maxPrice: '', rating: '', inStock: false });
 
-    setSavingProductId(productId);
-    try {
-      if (savedProductIds.includes(productId)) {
-        await apiFetch(`/cart/wishlist/${productId}`, { method: 'DELETE' });
-        setSavedProductIds((current) => current.filter((id) => id !== productId));
-      } else {
-        await apiFetch(`/cart/wishlist/${productId}`, { method: 'POST' });
-        setSavedProductIds((current) => [...current, productId]);
-      }
-    } catch (err: unknown) {
-      if (err instanceof Error) alert(err.message);
-    } finally {
-      setSavingProductId(null);
-    }
-  };
-
-  return (
-    <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
-      {/* Catalog Title Banner */}
-      <div className="flex flex-col md:flex-row justify-between items-start md:items-center gap-4 pb-6 border-b border-slate-200">
-        <div>
-          <h1 className="text-2xl sm:text-3xl font-extrabold text-slate-900 tracking-tight flex items-center gap-2">
-            Catalog & Products
-            <span className="text-xs font-semibold px-2.5 py-0.5 rounded-full bg-slate-100 text-slate-600 border border-slate-200">
-              {total} items
-            </span>
-          </h1>
-          <p className="text-sm text-slate-500 mt-1">
-            Discover curated apparel, gadgets, footwear, and workspace essentials
-          </p>
-        </div>
-
-        {/* Search Bar */}
-        <div className="w-full md:w-80 relative">
-          <Search className="w-4 h-4 text-slate-400 absolute left-3.5 top-1/2 -translate-y-1/2" />
-          <input
-            type="text"
-            value={search}
-            onChange={(e) => {
-              setSearch(e.target.value);
-              setPage(1);
-            }}
-            placeholder="Search products, brands..."
-            className="w-full pl-10 pr-4 py-2.5 rounded-xl border border-slate-200 bg-white text-sm outline-none focus:border-emerald-500 focus:ring-4 focus:ring-emerald-500/10 transition"
-          />
-        </div>
+  const filterPanel = <div className="space-y-7">
+    <FilterGroup title="Category">
+      <div className="space-y-0.5">
+        {[{ _id: 'all', name: 'All categories', slug: '' }, ...categories].map((category) => <button key={category._id} onClick={() => update({ category: category.slug })} className={`flex w-full items-center justify-between rounded-lg px-2.5 py-2 text-left text-sm transition ${filters.category === category.slug ? 'bg-emerald-50 font-semibold text-emerald-800' : 'text-slate-600 hover:bg-slate-50'}`}>{category.name}{filters.category === category.slug && <span className="size-1.5 rounded-full bg-emerald-600" />}</button>)}
       </div>
+    </FilterGroup>
 
-      {/* Category Pills Slider */}
-      <div className="flex items-center gap-2 overflow-x-auto py-4 no-scrollbar">
-        <button
-          onClick={() => {
-            setSelectedCategory('');
-            setPage(1);
-          }}
-          className={`px-4 py-2 rounded-full text-xs font-semibold whitespace-nowrap transition ${
-            selectedCategory === ''
-              ? 'bg-slate-900 text-white shadow-sm'
-              : 'bg-white text-slate-600 border border-slate-200 hover:border-slate-300'
-          }`}
-        >
-          All Categories
-        </button>
-        {categories.map((cat) => (
-          <button
-            key={cat._id}
-            onClick={() => {
-              setSelectedCategory(cat.slug);
-              setPage(1);
-            }}
-            className={`px-4 py-2 rounded-full text-xs font-semibold whitespace-nowrap transition ${
-              selectedCategory === cat.slug
-                ? 'bg-emerald-600 text-white shadow-sm'
-                : 'bg-white text-slate-600 border border-slate-200 hover:border-slate-300'
-            }`}
-          >
-            {cat.name}
-          </button>
-        ))}
+    {brands.length > 0 && <FilterGroup title="Brand">
+      <div className="flex flex-wrap gap-1.5">{brands.map((brand) => <button key={brand._id} onClick={() => update({ brand: filters.brand === brand.slug ? '' : brand.slug })} aria-pressed={filters.brand === brand.slug} className={`rounded-full border px-3 py-1.5 text-xs font-semibold transition ${filters.brand === brand.slug ? 'border-slate-900 bg-slate-900 text-white' : 'border-slate-200 text-slate-700 hover:border-slate-400'}`}>{brand.name}</button>)}</div>
+    </FilterGroup>}
+
+    <FilterGroup title="Price">
+      <div className="space-y-1">{pricePresets.map(([min, max, label]) => { const active = filters.minPrice === min && filters.maxPrice === max; return <label key={label} className="flex cursor-pointer items-center gap-2.5 rounded-lg px-2.5 py-1.5 text-sm text-slate-700 hover:bg-slate-50"><input type="radio" name="price" checked={active} onChange={() => update({ minPrice: min, maxPrice: max })} className="size-4 accent-emerald-700" />{label}</label>; })}</div>
+      <form onSubmit={(event) => { event.preventDefault(); update({ minPrice: priceDraft.min, maxPrice: priceDraft.max }); }} className="mt-3 flex items-center gap-2">
+        <input type="number" min="0" inputMode="numeric" placeholder="Min" value={priceDraft.min} onChange={(event) => setPriceDraft((draft) => ({ ...draft, min: event.target.value }))} className="w-full rounded-lg border border-slate-200 px-2.5 py-2 text-sm outline-none focus:border-emerald-600" />
+        <span className="text-slate-400">–</span>
+        <input type="number" min="0" inputMode="numeric" placeholder="Max" value={priceDraft.max} onChange={(event) => setPriceDraft((draft) => ({ ...draft, max: event.target.value }))} className="w-full rounded-lg border border-slate-200 px-2.5 py-2 text-sm outline-none focus:border-emerald-600" />
+        <button className="rounded-lg bg-slate-900 px-3 py-2 text-xs font-bold text-white hover:bg-emerald-700">Go</button>
+      </form>
+    </FilterGroup>
+
+    <FilterGroup title="Customer rating">
+      <div className="space-y-1">{['4', '3'].map((value) => <label key={value} className="flex cursor-pointer items-center gap-2.5 rounded-lg px-2.5 py-1.5 text-sm text-slate-700 hover:bg-slate-50"><input type="radio" name="rating" checked={filters.rating === value} onChange={() => update({ rating: value })} className="size-4 accent-emerald-700" /><span className="flex items-center gap-0.5">{Array.from({ length: 5 }, (_, index) => <Star key={index} className={`size-3.5 ${index < Number(value) ? 'fill-amber-400 text-amber-400' : 'text-slate-300'}`} />)}</span>& up</label>)}</div>
+    </FilterGroup>
+
+    <label className="flex cursor-pointer items-center justify-between rounded-xl border border-slate-200 px-3.5 py-3 text-sm font-semibold text-slate-800">
+      In stock only
+      <span className="relative inline-flex"><input type="checkbox" checked={filters.inStock} onChange={(event) => update({ inStock: event.target.checked })} className="peer sr-only" /><span className="h-6 w-11 rounded-full bg-slate-200 transition peer-checked:bg-emerald-600" /><span className="absolute left-0.5 top-0.5 size-5 rounded-full bg-white shadow transition peer-checked:translate-x-5" /></span>
+    </label>
+  </div>;
+
+  return <div className="mx-auto max-w-7xl px-4 py-8 sm:px-6 lg:px-8">
+    <header className="flex flex-col gap-4 border-b border-slate-200 pb-6 md:flex-row md:items-end md:justify-between">
+      <div>
+        <p className="text-xs font-bold uppercase tracking-wider text-emerald-700">{brandName ? 'Brand' : categoryName ? 'Category' : 'Catalog'}</p>
+        <h1 className="mt-1 text-3xl font-extrabold tracking-tight text-slate-950 sm:text-4xl">{filters.search ? `Results for “${filters.search}”` : brandName || categoryName || 'All products'}</h1>
+        <p className="mt-1 text-sm text-slate-500">{loading ? 'Finding products…' : `${total} product${total === 1 ? '' : 's'}`}</p>
       </div>
+      <div className="flex w-full items-center rounded-full border border-slate-200 bg-white px-3.5 transition focus-within:border-emerald-600 focus-within:ring-4 focus-within:ring-emerald-600/10 md:w-80">
+        <Search className="size-4 shrink-0 text-slate-400" />
+        <input value={searchDraft} onChange={(event) => setSearchDraft(event.target.value)} type="search" placeholder="Search in catalog" aria-label="Search in catalog" className="w-full bg-transparent px-2.5 py-2.5 text-sm outline-none" />
+      </div>
+    </header>
 
-      <div className="grid grid-cols-1 lg:grid-cols-4 gap-8 mt-4">
-        {/* Left Filter Sidebar */}
-        <aside className="space-y-6">
-          <div className="bg-white p-6 rounded-2xl border border-slate-200/80 shadow-sm space-y-6">
-            <div className="flex items-center justify-between pb-3 border-b border-slate-100">
-              <span className="text-sm font-bold text-slate-900 flex items-center gap-2">
-                <SlidersHorizontal className="w-4 h-4 text-emerald-600" />
-                Refine Search
-              </span>
-              {(selectedCategory || minPrice || maxPrice || inStock || search) && (
-                <button
-                  onClick={() => {
-                    setSelectedCategory('');
-                    setMinPrice('');
-                    setMaxPrice('');
-                    setInStock(false);
-                    setSearch('');
-                    setPage(1);
-                  }}
-                  className="text-xs text-emerald-600 hover:text-emerald-700 font-medium"
-                >
-                  Clear all
-                </button>
-              )}
-            </div>
+    {categories.length > 0 && <div className="no-scrollbar -mx-4 flex gap-2 overflow-x-auto px-4 py-4 sm:mx-0 sm:px-0">
+      {[{ _id: 'all', name: 'All', slug: '' }, ...categories].map((category) => <button key={category._id} onClick={() => update({ category: category.slug })} className={`shrink-0 rounded-full px-4 py-2 text-xs font-bold transition ${filters.category === category.slug ? 'bg-slate-900 text-white shadow-sm' : 'border border-slate-200 bg-white text-slate-600 hover:border-slate-400'}`}>{category.name}</button>)}
+    </div>}
 
-            {/* Price Filter */}
-            <div>
-              <label className="block text-xs font-bold uppercase tracking-wider text-slate-700 mb-2">
-                Price (₹)
-              </label>
-              <div className="flex items-center gap-2">
-                <input
-                  type="number"
-                  placeholder="Min"
-                  value={minPrice}
-                  onChange={(e) => setMinPrice(e.target.value)}
-                  className="w-full px-3 py-2 rounded-xl border border-slate-200 text-xs outline-none focus:border-emerald-500"
-                />
-                <span className="text-slate-400 text-xs">—</span>
-                <input
-                  type="number"
-                  placeholder="Max"
-                  value={maxPrice}
-                  onChange={(e) => setMaxPrice(e.target.value)}
-                  className="w-full px-3 py-2 rounded-xl border border-slate-200 text-xs outline-none focus:border-emerald-500"
-                />
-              </div>
-            </div>
+    <div className="grid gap-8 lg:grid-cols-[250px_minmax(0,1fr)]">
+      <aside className="hidden lg:block"><div className="sticky top-24 max-h-[calc(100vh-7rem)] overflow-y-auto pr-2 no-scrollbar">{filterPanel}</div></aside>
 
-            {/* In-stock Filter */}
-            <div className="flex items-center gap-2 pt-2 border-t border-slate-100">
-              <input
-                type="checkbox"
-                id="stockCheck"
-                checked={inStock}
-                onChange={(e) => {
-                  setInStock(e.target.checked);
-                  setPage(1);
-                }}
-                className="rounded border-slate-300 text-emerald-600 focus:ring-emerald-500"
-              />
-              <label
-                htmlFor="stockCheck"
-                className="text-xs text-slate-700 font-medium cursor-pointer"
-              >
-                In Stock Items Only
-              </label>
-            </div>
-
-            {/* Sorting */}
-            <div className="pt-2 border-t border-slate-100">
-              <label className="block text-xs font-bold uppercase tracking-wider text-slate-700 mb-2">
-                Sort By
-              </label>
-              <select
-                value={sort}
-                onChange={(e) => setSort(e.target.value)}
-                className="w-full px-3 py-2.5 rounded-xl border border-slate-200 text-xs text-slate-800 bg-white outline-none focus:border-emerald-500 cursor-pointer"
-              >
-                <option value="newest">Newest Arrivals</option>
-                <option value="popular">Most Popular</option>
-                <option value="price_asc">Price: Low to High</option>
-                <option value="price_desc">Price: High to Low</option>
-              </select>
+      <main className="min-w-0">
+        <div className="mb-4 flex flex-wrap items-center gap-2">
+          <button onClick={() => setFiltersOpen(true)} className="inline-flex items-center gap-2 rounded-full border border-slate-200 bg-white px-4 py-2 text-xs font-bold text-slate-800 lg:hidden"><SlidersHorizontal className="size-3.5" />Filters{chips.length > 0 && <span className="grid size-5 place-items-center rounded-full bg-emerald-600 text-[10px] text-white">{chips.length}</span>}</button>
+          <div className="flex min-w-0 flex-1 flex-wrap items-center gap-1.5">
+            {chips.map((chip) => <button key={chip.label} onClick={() => update(chip.clear)} className="inline-flex items-center gap-1 rounded-full bg-emerald-50 px-3 py-1.5 text-xs font-semibold text-emerald-800 ring-1 ring-inset ring-emerald-200 hover:bg-emerald-100">{chip.label}<X className="size-3" /></button>)}
+            {chips.length > 1 && <button onClick={clearAll} className="px-2 text-xs font-semibold text-slate-500 underline-offset-2 hover:underline">Clear all</button>}
+          </div>
+          <div className="ml-auto flex items-center gap-2">
+            <select value={filters.sort} onChange={(event) => update({ sort: event.target.value })} aria-label="Sort products" className="rounded-full border border-slate-200 bg-white px-3.5 py-2 text-xs font-semibold text-slate-800 outline-none focus:border-emerald-600">{sortOptions.map(([value, label]) => <option key={value} value={value}>{label}</option>)}</select>
+            <div className="hidden rounded-full border border-slate-200 bg-white p-0.5 sm:flex" role="group" aria-label="Layout">
+              <button onClick={() => setLayoutPersisted('grid')} aria-pressed={layout === 'grid'} aria-label="Grid view" className={`grid size-8 place-items-center rounded-full transition ${layout === 'grid' ? 'bg-slate-900 text-white' : 'text-slate-500 hover:text-slate-900'}`}><LayoutGrid className="size-3.5" /></button>
+              <button onClick={() => setLayoutPersisted('list')} aria-pressed={layout === 'list'} aria-label="List view" className={`grid size-8 place-items-center rounded-full transition ${layout === 'list' ? 'bg-slate-900 text-white' : 'text-slate-500 hover:text-slate-900'}`}><List className="size-3.5" /></button>
             </div>
           </div>
-        </aside>
+        </div>
 
-        {/* Products Grid */}
-        <main className="lg:col-span-3">
-          {loading ? (
-            <div className="py-24 flex flex-col items-center justify-center gap-3">
-              <div className="w-8 h-8 border-3 border-emerald-600 border-t-transparent rounded-full animate-spin" />
-              <p className="text-xs text-slate-400">Loading catalog...</p>
-            </div>
-          ) : products.length === 0 ? (
-            <div className="py-24 text-center border-2 border-dashed border-slate-200 rounded-3xl bg-white p-8">
-              <Sparkles className="w-10 h-10 text-slate-300 mx-auto mb-3" />
-              <h3 className="text-base font-bold text-slate-800">
-                No matching products found
-              </h3>
-              <p className="text-xs text-slate-500 mt-1 max-w-sm mx-auto">
-                Try loosening your filters or search for another keyword like &quot;kurta&quot;, &quot;airpods&quot;, or &quot;nike&quot;.
-              </p>
-            </div>
-          ) : (
-            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-6">
-              {products.map((p) => {
-                const primaryVariant = p.variants?.[0];
-                const imageUrl =
-                  primaryVariant?.images?.[0]?.url ||
-                  'https://images.unsplash.com/photo-1523275335684-37898b6baf30?w=800&q=80';
-                const discount = p.compareAtPrice
-                  ? Math.round(
-                      ((p.compareAtPrice - p.basePrice) / p.compareAtPrice) * 100
-                    )
-                  : 0;
+        {loading
+          ? <div className={layout === 'grid' ? 'grid grid-cols-2 gap-x-4 gap-y-8 sm:grid-cols-3' : 'space-y-3'}>{Array.from({ length: 6 }, (_, index) => <ProductCardSkeleton key={index} layout={layout} />)}</div>
+          : products.length === 0
+            ? <div className="rounded-3xl border-2 border-dashed border-slate-200 bg-white px-6 py-20 text-center">
+                <Search className="mx-auto size-10 text-slate-300" />
+                <h2 className="mt-3 text-lg font-bold text-slate-900">No products match these filters</h2>
+                <p className="mx-auto mt-1 max-w-sm text-sm text-slate-500">Try removing a filter or searching for something broader.</p>
+                {chips.length > 0 && <button onClick={clearAll} className="mt-5 rounded-full bg-slate-900 px-5 py-2.5 text-sm font-bold text-white hover:bg-emerald-700">Clear all filters</button>}
+              </div>
+            : <div className={layout === 'grid' ? 'grid grid-cols-2 gap-x-4 gap-y-8 sm:grid-cols-3' : 'space-y-3'}>{products.map((product, index) => <ProductCard key={product._id} product={product} layout={layout} priority={index < 3} />)}</div>}
 
-                const isAdding = addingSku === primaryVariant?.sku;
-
-                return (
-                  <div
-                    key={p._id}
-                    className="group relative flex flex-col rounded-3xl bg-white border border-slate-200/80 hover:border-emerald-300 hover:shadow-xl hover:shadow-emerald-950/5 transition-all duration-300 overflow-hidden"
-                  >
-                    {/* Image Area */}
-                    <Link
-                      href={`/catalog/${p.slug}`}
-                      className="relative w-full pt-[85%] bg-slate-100 overflow-hidden block"
-                    >
-                      <Image
-                        src={imageUrl}
-                        alt={p.title}
-                        fill
-                        className="object-cover object-center group-hover:scale-105 transition-transform duration-500"
-                        sizes="(max-width: 768px) 100vw, (max-width: 1200px) 50vw, 33vw"
-                      />
-                      {discount > 0 && (
-                        <span className="absolute top-3 left-3 px-2 py-1 rounded-lg bg-emerald-600 text-white font-bold text-[10px] tracking-wide shadow-sm">
-                          {discount}% OFF
-                        </span>
-                      )}
-                    </Link>
-                    <button
-                      type="button"
-                      onClick={() => handleSaveProduct(p._id)}
-                      disabled={savingProductId === p._id}
-                      aria-label={savedProductIds.includes(p._id) ? 'Remove from wishlist' : 'Save to wishlist'}
-                      aria-pressed={savedProductIds.includes(p._id)}
-                      title={savedProductIds.includes(p._id) ? 'Remove from wishlist' : 'Save to wishlist'}
-                      className="absolute right-3 top-3 z-10 grid size-9 place-items-center rounded-full border border-slate-200 bg-white/95 text-slate-600 shadow-sm transition hover:text-rose-600 disabled:opacity-50"
-                    >
-                      <Heart className={`size-4 ${savedProductIds.includes(p._id) ? 'fill-rose-500 text-rose-500' : ''}`} />
-                    </button>
-
-                    {/* Content */}
-                    <div className="p-5 flex-1 flex flex-col justify-between">
-                      <div>
-                        <div className="flex items-center justify-between text-[11px] text-slate-400 font-medium mb-1">
-                          <span>{p.categoryId?.name}</span>
-                          {p.rating?.average > 0 && (
-                            <span className="inline-flex items-center gap-1 text-amber-500 font-bold">
-                              <Star className="w-3 h-3 fill-amber-400 text-amber-400" />
-                              {p.rating.average}
-                            </span>
-                          )}
-                        </div>
-
-                        <Link
-                          href={`/catalog/${p.slug}`}
-                          className="font-bold text-sm text-slate-900 group-hover:text-emerald-600 line-clamp-2 transition-colors"
-                        >
-                          {p.title}
-                        </Link>
-                      </div>
-
-                      <div className="pt-4 border-t border-slate-100 mt-4 flex items-center justify-between">
-                        <div>
-                          <div className="flex items-baseline gap-2">
-                            <span className="text-base font-extrabold text-slate-900">
-                              ₹{p.basePrice.toLocaleString('en-IN')}
-                            </span>
-                            {p.compareAtPrice && (
-                              <span className="text-xs text-slate-400 line-through">
-                                ₹{p.compareAtPrice.toLocaleString('en-IN')}
-                              </span>
-                            )}
-                          </div>
-                          <span className="text-[10px] text-emerald-600 font-semibold">
-                            Free Express Delivery
-                          </span>
-                        </div>
-
-                        <button
-                          onClick={() => handleQuickAdd(p)}
-                          disabled={isAdding}
-                          className={`p-2.5 rounded-xl transition shadow-sm ${
-                            isAdding
-                              ? 'bg-emerald-700 text-white'
-                              : 'bg-emerald-50 text-emerald-700 hover:bg-emerald-600 hover:text-white'
-                          }`}
-                          aria-label="Add to cart"
-                        >
-                          {isAdding ? (
-                            <Check className="w-4 h-4 animate-in zoom-in" />
-                          ) : (
-                            <ShoppingBag className="w-4 h-4" />
-                          )}
-                        </button>
-                      </div>
-                    </div>
-                  </div>
-                );
-              })}
-            </div>
-          )}
-
-          {/* Pagination Controls */}
-          {totalPages > 1 && (
-            <div className="flex justify-center items-center gap-3 mt-10">
-              <button
-                disabled={page <= 1}
-                onClick={() => setPage((p) => Math.max(1, p - 1))}
-                className="p-2 rounded-xl border border-slate-200 bg-white disabled:opacity-30 hover:bg-slate-50 transition"
-              >
-                <ChevronLeft className="w-4 h-4 text-slate-700" />
-              </button>
-              <span className="text-xs font-semibold text-slate-600">
-                Page {page} of {totalPages}
-              </span>
-              <button
-                disabled={page >= totalPages}
-                onClick={() => setPage((p) => Math.min(totalPages, p + 1))}
-                className="p-2 rounded-xl border border-slate-200 bg-white disabled:opacity-30 hover:bg-slate-50 transition"
-              >
-                <ChevronRight className="w-4 h-4 text-slate-700" />
-              </button>
-            </div>
-          )}
-        </main>
-      </div>
+        {totalPages > 1 && !loading && <Pagination page={filters.page} totalPages={totalPages} onPage={(page) => update({ page })} />}
+      </main>
     </div>
-  );
+
+    {filtersOpen && <div className="fixed inset-0 z-[80] lg:hidden">
+      <div className="absolute inset-0 bg-slate-950/50 backdrop-blur-sm" onClick={() => setFiltersOpen(false)} aria-hidden="true" />
+      <section role="dialog" aria-modal="true" aria-label="Filters" className="sheet-in absolute inset-x-0 bottom-0 flex max-h-[88vh] flex-col rounded-t-3xl bg-white shadow-2xl">
+        <header className="flex items-center justify-between border-b border-slate-100 px-5 py-4"><h2 className="text-lg font-extrabold">Filters</h2><button onClick={() => setFiltersOpen(false)} aria-label="Close filters" className="grid size-9 place-items-center rounded-full hover:bg-slate-100"><X className="size-5" /></button></header>
+        <div className="flex-1 overflow-y-auto p-5">{filterPanel}</div>
+        <footer className="grid grid-cols-2 gap-2 border-t border-slate-100 p-4"><button onClick={clearAll} className="rounded-xl border border-slate-200 py-3 text-sm font-bold text-slate-800">Clear all</button><button onClick={() => setFiltersOpen(false)} className="rounded-xl bg-slate-900 py-3 text-sm font-bold text-white">Show {total} results</button></footer>
+      </section>
+    </div>}
+  </div>;
+}
+
+function FilterGroup({ title, children }: { title: string; children: React.ReactNode }) {
+  return <section><h3 className="mb-2.5 text-xs font-bold uppercase tracking-wider text-slate-400">{title}</h3>{children}</section>;
+}
+
+function Pagination({ page, totalPages, onPage }: { page: number; totalPages: number; onPage: (page: number) => void }) {
+  // Show first, last, and a window around the current page.
+  const pages = Array.from({ length: totalPages }, (_, index) => index + 1).filter((value) => value === 1 || value === totalPages || Math.abs(value - page) <= 1);
+  return <nav className="mt-12 flex items-center justify-center gap-1.5" aria-label="Pagination">
+    <button onClick={() => onPage(page - 1)} disabled={page <= 1} aria-label="Previous page" className="grid size-10 place-items-center rounded-full border border-slate-200 bg-white text-slate-700 disabled:opacity-30"><ChevronLeft className="size-4" /></button>
+    {pages.map((value, index) => <span key={value} className="flex items-center gap-1.5">
+      {index > 0 && value - pages[index - 1] > 1 && <span className="px-1 text-slate-400">…</span>}
+      <button onClick={() => onPage(value)} aria-current={value === page ? 'page' : undefined} className={`grid size-10 place-items-center rounded-full text-sm font-bold transition ${value === page ? 'bg-slate-900 text-white' : 'border border-slate-200 bg-white text-slate-700 hover:border-slate-400'}`}>{value}</button>
+    </span>)}
+    <button onClick={() => onPage(page + 1)} disabled={page >= totalPages} aria-label="Next page" className="grid size-10 place-items-center rounded-full border border-slate-200 bg-white text-slate-700 disabled:opacity-30"><ChevronRight className="size-4" /></button>
+  </nav>;
 }

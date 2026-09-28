@@ -5,6 +5,7 @@ import { useRouter } from 'next/navigation';
 import Link from 'next/link';
 import { useAuthStore } from '../../stores/auth.store';
 import { apiFetch } from '../../lib/api';
+import { errorMessage, toast } from '../../stores/toast.store';
 import {
   User,
   MapPin,
@@ -105,10 +106,9 @@ export default function AccountPage() {
       setIsDefault(false);
 
       await fetchAddresses();
+      toast.success('Address saved');
     } catch (err: unknown) {
-      if (err instanceof Error) {
-        alert(err.message);
-      }
+      toast.error(errorMessage(err, 'Could not save address'));
     } finally {
       setSavingAddress(false);
     }
@@ -120,10 +120,9 @@ export default function AccountPage() {
         method: 'PATCH',
       });
       await fetchAddresses();
+      toast.success('Default address updated');
     } catch (err: unknown) {
-      if (err instanceof Error) {
-        alert(err.message);
-      }
+      toast.error(errorMessage(err, 'Could not update address'));
     }
   };
 
@@ -135,10 +134,9 @@ export default function AccountPage() {
         method: 'DELETE',
       });
       await fetchAddresses();
+      toast.success('Address removed');
     } catch (err: unknown) {
-      if (err instanceof Error) {
-        alert(err.message);
-      }
+      toast.error(errorMessage(err, 'Could not remove address'));
     }
   };
 

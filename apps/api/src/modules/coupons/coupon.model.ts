@@ -12,6 +12,7 @@ export interface ICoupon extends Document {
   usageLimitPerUser: number;
   usedCount: number;
   isActive: boolean;
+  showInOffers: boolean;
   createdAt: Date;
   updatedAt: Date;
 }
@@ -29,6 +30,8 @@ const couponSchema = new Schema<ICoupon>(
     usageLimitPerUser: { type: Number, default: 1 },
     usedCount: { type: Number, default: 0 },
     isActive: { type: Boolean, default: true, index: true },
+    // Advertised on the storefront offers strip; codes stay private unless the admin opts in.
+    showInOffers: { type: Boolean, default: false },
   },
   {
     timestamps: true,

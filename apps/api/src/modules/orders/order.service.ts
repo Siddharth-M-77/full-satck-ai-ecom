@@ -10,6 +10,8 @@ import { ORDER_STATUS, OrderStatus, PAYMENT_METHODS, PaymentMethod } from '@shop
 import { getRazorpayClient } from '../../config/razorpay.js';
 import { env } from '../../config/env.js';
 import { logger } from '../../config/logger.js';
+import { CouponService } from '../coupons/coupon.service.js';
+import { computePricing } from './pricing.js';
 
 // Order State Machine valid transition rules
 const ALLOWED_TRANSITIONS: Record<OrderStatus, OrderStatus[]> = {
@@ -111,7 +113,7 @@ export class OrderService {
 
     for (const reservation of expired) {
       await this.releaseStock(reservation.orderId);
-      await Order.updateOne(
+      const cancelled = await Order.findOneAndUpdate(
         { _id: reservation.orderId, status: ORDER_STATUS.PENDING_PAYMENT },
         {
           $set: { status: ORDER_STATUS.CANCELLED },
@@ -124,6 +126,7 @@ export class OrderService {
           },
         }
       );
+      await CouponService.releaseUse(cancelled?.couponCode);
     }
 
     return expired.length;
@@ -171,24 +174,34 @@ export class OrderService {
       });
     }
 
-    const discountTotal = cart.appliedCoupon?.discountAmount || 0;
-    const shippingFee = itemsTotal > 999 ? 0 : 99;
-    const taxTotal = Math.round(itemsTotal * 0.18);
-    const grandTotal = Math.max(0, itemsTotal - discountTotal + shippingFee + taxTotal);
+    // Re-validate the coupon now that we know the customer (per-customer limits) and claim a use
+    // before touching stock, so a coupon that just ran out fails the checkout cleanly.
+    const couponCode = cart.appliedCoupon?.code;
+    let couponDiscount = 0;
+    if (couponCode) {
+      couponDiscount = (await CouponService.evaluate(couponCode, itemsTotal, userId)).discountAmount;
+      await CouponService.claimUse(couponCode);
+    }
+    const { discountTotal, shippingFee, taxTotal, grandTotal } = computePricing(itemsTotal, couponDiscount);
 
     const orderNumber = `SS-${Date.now().toString(36).toUpperCase()}-${crypto.randomBytes(2).toString('hex').toUpperCase()}`;
     const orderId = new mongoose.Types.ObjectId();
 
     // 1. Atomically reserve stock
-    await this.reserveStock(
-      userId,
-      orderId,
-      orderItems.map((i) => ({
-        productId: i.productId.toString(),
-        sku: i.sku,
-        quantity: i.quantity,
-      }))
-    );
+    try {
+      await this.reserveStock(
+        userId,
+        orderId,
+        orderItems.map((i) => ({
+          productId: i.productId.toString(),
+          sku: i.sku,
+          quantity: i.quantity,
+        }))
+      );
+    } catch (err) {
+      await CouponService.releaseUse(couponCode);
+      throw err;
+    }
 
     // 2. Create Order document
     const order = new Order({
@@ -204,6 +217,7 @@ export class OrderService {
         grandTotal,
       },
       shippingAddress: data.shippingAddress,
+      couponCode,
       paymentMethod: data.paymentMethod || PAYMENT_METHODS.RAZORPAY,
       status:
         data.paymentMethod === PAYMENT_METHODS.COD
@@ -272,6 +286,7 @@ export class OrderService {
         } catch (err: unknown) {
           logger.error({ err }, 'Razorpay order creation failed');
           await this.releaseStock(order._id);
+          await CouponService.releaseUse(couponCode);
           await Payment.deleteOne({ orderId: order._id });
           await Order.deleteOne({ _id: order._id });
           throw AppError.serviceUnavailable('Unable to start Razorpay checkout. Please retry.');
@@ -319,6 +334,7 @@ export class OrderService {
       await this.commitStock(order._id);
     } else if (newStatus === ORDER_STATUS.CANCELLED) {
       await this.releaseStock(order._id);
+      await CouponService.releaseUse(order.couponCode);
     }
 
     await order.save();

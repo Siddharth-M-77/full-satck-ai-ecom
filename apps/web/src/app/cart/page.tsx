@@ -1,248 +1,143 @@
 'use client';
 
-import { useEffect } from 'react';
+import { useEffect, useState, type FormEvent } from 'react';
 import Link from 'next/link';
 import Image from 'next/image';
-import { useCartStore } from '../../stores/cart.store';
-import {
-  ShoppingBag,
-  Trash2,
-  Minus,
-  Plus,
-  ArrowRight,
-  ShieldCheck,
-  Truck,
-  Sparkles,
-} from 'lucide-react';
+import { ArrowRight, CircleAlert, Loader2, Lock, Minus, Plus, ShoppingBag, TicketPercent, Trash2, Truck, X } from 'lucide-react';
+import { useCartStore, type CartItem } from '../../stores/cart.store';
+import { errorMessage, toast } from '../../stores/toast.store';
+import { discountPercent, FALLBACK_IMAGE, FREE_SHIPPING_THRESHOLD, inr } from '../../lib/catalog';
+import { OfferTicket, useOffers } from '../../components/common/OffersStrip';
 
 export default function CartPage() {
-  const { items, pricing, fetchCart, updateQuantity, removeItem, loading } = useCartStore();
+  const { items, pricing, appliedCoupon, couponError, fetchCart, updateQuantity, removeItem, applyCoupon, removeCoupon, loading, itemCount } = useCartStore();
+  const offers = useOffers();
+  const [code, setCode] = useState('');
+  const [applying, setApplying] = useState(false);
+  const [busySku, setBusySku] = useState<string | null>(null);
+  const [loaded, setLoaded] = useState(false);
 
-  useEffect(() => {
-    fetchCart();
-  }, [fetchCart]);
+  useEffect(() => { void fetchCart().finally(() => setLoaded(true)); }, [fetchCart]);
 
-  const freeDeliveryThreshold = 999;
-  const amountNeededForFreeDelivery = Math.max(
-    0,
-    freeDeliveryThreshold - pricing.itemsTotal
-  );
-  const deliveryProgress = Math.min(
-    100,
-    (pricing.itemsTotal / freeDeliveryThreshold) * 100
-  );
+  const remaining = Math.max(0, FREE_SHIPPING_THRESHOLD + 1 - pricing.itemsTotal);
+  const progress = Math.min(100, (pricing.itemsTotal / (FREE_SHIPPING_THRESHOLD + 1)) * 100);
+  const savingsOnItems = items.reduce((sum, item) => sum + Math.max(0, (item.compareAtPrice || item.price) - item.price) * item.quantity, 0);
+  const totalSavings = savingsOnItems + pricing.discountTotal;
 
-  if (loading && items.length === 0) {
-    return (
-      <div className="min-h-[70vh] flex flex-col items-center justify-center gap-3">
-        <div className="w-8 h-8 border-3 border-emerald-600 border-t-transparent rounded-full animate-spin" />
-        <p className="text-xs text-slate-400">Loading your cart...</p>
-      </div>
-    );
-  }
+  const submitCoupon = async (value: string) => {
+    if (!value.trim()) return;
+    setApplying(true);
+    try {
+      await applyCoupon(value.trim());
+      setCode('');
+      toast.success(`${value.trim().toUpperCase()} applied`, { description: 'Your discount is in the summary.' });
+    } catch (err) {
+      toast.error(errorMessage(err, 'Could not apply coupon'));
+    } finally {
+      setApplying(false);
+    }
+  };
 
-  if (items.length === 0) {
-    return (
-      <div className="max-w-4xl mx-auto px-4 py-20 text-center">
-        <div className="w-20 h-20 rounded-3xl bg-emerald-50 border border-emerald-100 flex items-center justify-center mx-auto mb-6">
-          <ShoppingBag className="w-10 h-10 text-emerald-600" />
+  const changeQuantity = async (item: CartItem, quantity: number) => {
+    setBusySku(item.sku);
+    try {
+      if (quantity <= 0) {
+        await removeItem(item.sku);
+        toast.info('Removed from cart', { description: item.title });
+      } else {
+        await updateQuantity(item.sku, quantity);
+      }
+    } catch (err) {
+      toast.error(errorMessage(err, 'Could not update cart'));
+    } finally {
+      setBusySku(null);
+    }
+  };
+
+  if (!loaded && items.length === 0) return <div className="mx-auto max-w-7xl px-4 py-10 sm:px-6 lg:px-8"><div className="grid gap-8 lg:grid-cols-[1fr_380px]"><div className="space-y-3">{[0, 1, 2].map((index) => <div key={index} className="h-32 animate-pulse rounded-3xl bg-slate-100" />)}</div><div className="h-80 animate-pulse rounded-3xl bg-slate-100" /></div></div>;
+
+  if (items.length === 0) return <div className="mx-auto max-w-lg px-4 py-24 text-center">
+    <div className="mx-auto grid size-24 place-items-center rounded-full bg-emerald-50"><ShoppingBag className="size-10 text-emerald-600" /></div>
+    <h1 className="mt-6 text-3xl font-extrabold tracking-tight text-slate-950">Your cart is empty</h1>
+    <p className="mt-2 text-sm text-slate-500">Browse the catalog and add things you love — they will wait for you here.</p>
+    <div className="mt-8 flex flex-wrap justify-center gap-3"><Link href="/catalog" className="inline-flex items-center gap-2 rounded-full bg-slate-900 px-6 py-3 text-sm font-bold text-white hover:bg-emerald-700">Start shopping <ArrowRight className="size-4" /></Link><Link href="/wishlist" className="rounded-full border border-slate-200 bg-white px-6 py-3 text-sm font-bold text-slate-800 hover:border-slate-400">View wishlist</Link></div>
+  </div>;
+
+  return <div className="mx-auto max-w-7xl px-4 py-8 pb-32 sm:px-6 lg:px-8 lg:pb-10">
+    <h1 className="text-3xl font-extrabold tracking-tight text-slate-950">Your cart <span className="text-lg font-semibold text-slate-400">({itemCount} item{itemCount === 1 ? '' : 's'})</span></h1>
+
+    <div className="mt-6 grid gap-8 lg:grid-cols-[minmax(0,1fr)_380px]">
+      <div className="space-y-4">
+        <div className={`rounded-2xl border p-4 ${remaining === 0 ? 'border-emerald-200 bg-emerald-50' : 'border-slate-200 bg-white'}`}>
+          <p className="flex items-center gap-2 text-sm font-semibold text-slate-800"><Truck className={`size-4 ${remaining === 0 ? 'text-emerald-600' : 'text-slate-500'}`} />{remaining === 0 ? 'You have unlocked free delivery' : <>Add <strong className="text-emerald-700">{inr(remaining)}</strong> more for free delivery</>}</p>
+          <div className="mt-3 h-2 overflow-hidden rounded-full bg-slate-100"><div className="h-full rounded-full bg-gradient-to-r from-emerald-500 to-emerald-600 transition-all duration-500" style={{ width: `${progress}%` }} /></div>
         </div>
-        <h1 className="text-2xl sm:text-3xl font-extrabold text-slate-900 tracking-tight">
-          Your Cart is Empty
-        </h1>
-        <p className="text-sm text-slate-500 mt-2 max-w-sm mx-auto mb-8">
-          Explore our intelligent catalog or ask our AI Shopping Assistant to find perfect picks for you.
-        </p>
-        <Link
-          href="/catalog"
-          className="inline-flex items-center gap-2 px-8 py-3.5 rounded-2xl bg-gradient-to-r from-emerald-600 to-teal-600 text-white font-bold text-sm shadow-md hover:from-emerald-500 hover:to-teal-500 transition shadow-emerald-600/20"
-        >
-          <span>Explore Catalog</span>
-          <ArrowRight className="w-4 h-4" />
-        </Link>
-      </div>
-    );
-  }
 
-  return (
-    <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-10">
-      <div className="mb-8">
-        <h1 className="text-2xl sm:text-3xl font-extrabold text-slate-900 tracking-tight">
-          Shopping Cart ({items.reduce((acc, i) => acc + i.quantity, 0)})
-        </h1>
-        <p className="text-sm text-slate-500 mt-1">
-          Review your items before proceeding to secure checkout
-        </p>
-      </div>
-
-      <div className="grid grid-cols-1 lg:grid-cols-3 gap-10">
-        {/* Items List */}
-        <div className="lg:col-span-2 space-y-4">
-          {/* Free delivery banner */}
-          <div className="p-4 rounded-2xl bg-emerald-50/80 border border-emerald-200/80">
-            <div className="flex items-center justify-between text-xs font-semibold text-emerald-900 mb-2">
-              <span className="flex items-center gap-1.5">
-                <Truck className="w-4 h-4 text-emerald-600" />
-                {amountNeededForFreeDelivery === 0
-                  ? '🎉 You unlocked FREE Express Delivery!'
-                  : `Add ₹${amountNeededForFreeDelivery.toLocaleString('en-IN')} more to unlock FREE Delivery`}
-              </span>
-              <span>{Math.round(deliveryProgress)}%</span>
-            </div>
-            <div className="w-full h-2 rounded-full bg-emerald-200 overflow-hidden">
-              <div
-                className="h-full bg-emerald-600 rounded-full transition-all duration-500"
-                style={{ width: `${deliveryProgress}%` }}
-              />
-            </div>
-          </div>
-
+        <ul className="divide-y divide-slate-100 overflow-hidden rounded-3xl border border-slate-200 bg-white">
           {items.map((item) => {
-            const attrLabel =
-              Object.values(item.attributes || {}).join(' / ') || item.sku;
-
-            return (
-              <div
-                key={item._id || item.sku}
-                className="p-5 rounded-3xl bg-white border border-slate-200/80 shadow-sm flex flex-col sm:flex-row items-start sm:items-center gap-5 transition hover:border-slate-300"
-              >
-                {/* Product Image */}
-                <Link
-                  href={`/catalog/${item.slug}`}
-                  className="relative w-24 h-24 rounded-2xl overflow-hidden bg-slate-100 flex-shrink-0"
-                >
-                  <Image
-                    src={
-                      item.image ||
-                      'https://images.unsplash.com/photo-1523275335684-37898b6baf30?w=800&q=80'
-                    }
-                    alt={item.title}
-                    fill
-                    className="object-cover"
-                    sizes="96px"
-                  />
-                </Link>
-
-                {/* Details */}
-                <div className="flex-1">
-                  <Link
-                    href={`/catalog/${item.slug}`}
-                    className="text-sm font-bold text-slate-900 hover:text-emerald-600 line-clamp-1 transition-colors"
-                  >
-                    {item.title}
-                  </Link>
-
-                  <p className="text-xs text-slate-500 mt-1">
-                    Variant: <span className="font-medium text-slate-700">{attrLabel}</span>
-                  </p>
-
-                  <div className="flex items-center gap-3 mt-3">
-                    <span className="text-sm font-extrabold text-slate-900">
-                      ₹{item.price.toLocaleString('en-IN')}
-                    </span>
-                    {item.compareAtPrice && (
-                      <span className="text-xs text-slate-400 line-through">
-                        ₹{item.compareAtPrice.toLocaleString('en-IN')}
-                      </span>
-                    )}
-                  </div>
+            const off = discountPercent(item.price, item.compareAtPrice);
+            const busy = busySku === item.sku;
+            return <li key={item._id || item.sku} className={`flex gap-4 p-4 transition sm:p-5 ${busy ? 'opacity-60' : ''}`}>
+              <Link href={`/catalog/${item.slug}`} className="relative size-24 shrink-0 overflow-hidden rounded-2xl bg-slate-100 sm:size-28"><Image src={item.image || FALLBACK_IMAGE} alt={item.title} fill sizes="112px" className="object-cover" /></Link>
+              <div className="flex min-w-0 flex-1 flex-col">
+                <div className="flex items-start justify-between gap-3">
+                  <div className="min-w-0"><Link href={`/catalog/${item.slug}`} className="line-clamp-2 text-sm font-bold text-slate-900 hover:text-emerald-700 sm:text-base">{item.title}</Link><p className="mt-0.5 text-xs text-slate-500">{Object.values(item.attributes || {}).join(' / ') || item.sku}</p></div>
+                  <button onClick={() => void changeQuantity(item, 0)} disabled={busy} aria-label={`Remove ${item.title}`} className="grid size-8 shrink-0 place-items-center rounded-full text-slate-400 transition hover:bg-rose-50 hover:text-rose-600"><Trash2 className="size-4" /></button>
                 </div>
-
-                {/* Quantity Controls & Delete */}
-                <div className="flex items-center justify-between sm:justify-end w-full sm:w-auto gap-4 pt-3 sm:pt-0 border-t sm:border-t-0 border-slate-100">
-                  <div className="flex items-center border border-slate-200 rounded-xl bg-slate-50">
-                    <button
-                      onClick={() => updateQuantity(item.sku, item.quantity - 1)}
-                      className="p-2 text-slate-500 hover:text-slate-900 transition"
-                      aria-label="Decrease quantity"
-                    >
-                      <Minus className="w-3.5 h-3.5" />
-                    </button>
-                    <span className="w-8 text-center text-xs font-bold text-slate-900">
-                      {item.quantity}
-                    </span>
-                    <button
-                      onClick={() => updateQuantity(item.sku, item.quantity + 1)}
-                      className="p-2 text-slate-500 hover:text-slate-900 transition"
-                      aria-label="Increase quantity"
-                    >
-                      <Plus className="w-3.5 h-3.5" />
-                    </button>
+                <p className="mt-1 flex flex-wrap items-baseline gap-x-2 text-sm"><span className="font-extrabold text-slate-950">{inr(item.price)}</span>{off > 0 && <><span className="text-xs text-slate-400 line-through">{inr(item.compareAtPrice)}</span><span className="text-xs font-bold text-emerald-700">{off}% off</span></>}</p>
+                {item.stock <= 5 && <p className="mt-1 text-xs font-semibold text-amber-600">Only {item.stock} left in stock</p>}
+                <div className="mt-auto flex items-center justify-between pt-3">
+                  <div className="flex items-center rounded-full border border-slate-200 bg-slate-50">
+                    <button onClick={() => void changeQuantity(item, item.quantity - 1)} disabled={busy} aria-label="Decrease quantity" className="grid size-9 place-items-center text-slate-600 hover:text-slate-900">{item.quantity === 1 ? <Trash2 className="size-3.5" /> : <Minus className="size-3.5" />}</button>
+                    <span className="w-8 text-center text-sm font-bold tabular-nums">{busy ? <Loader2 className="mx-auto size-3.5 animate-spin" /> : item.quantity}</span>
+                    <button onClick={() => void changeQuantity(item, item.quantity + 1)} disabled={busy || item.quantity >= item.stock} aria-label="Increase quantity" className="grid size-9 place-items-center text-slate-600 hover:text-slate-900 disabled:opacity-30"><Plus className="size-3.5" /></button>
                   </div>
-
-                  <span className="text-sm font-bold text-slate-900 sm:w-24 text-right">
-                    ₹{item.subtotal.toLocaleString('en-IN')}
-                  </span>
-
-                  <button
-                    onClick={() => removeItem(item.sku)}
-                    className="p-2 text-slate-400 hover:text-red-600 transition"
-                    aria-label="Remove item"
-                  >
-                    <Trash2 className="w-4 h-4" />
-                  </button>
+                  <span className="text-base font-extrabold text-slate-950">{inr(item.subtotal)}</span>
                 </div>
               </div>
-            );
+            </li>;
           })}
-        </div>
+        </ul>
+        <Link href="/catalog" className="inline-flex items-center gap-1.5 text-sm font-bold text-emerald-700 hover:text-emerald-800">← Continue shopping</Link>
+      </div>
 
-        {/* Order Summary Checkout Card */}
-        <div className="space-y-6">
-          <div className="p-6 sm:p-8 rounded-3xl bg-white border border-slate-200/80 shadow-sm space-y-6">
-            <h2 className="text-lg font-bold text-slate-900">Order Summary</h2>
-
-            <div className="space-y-3 text-xs text-slate-600 border-b border-slate-100 pb-4">
-              <div className="flex justify-between">
-                <span>Items Subtotal</span>
-                <span className="font-semibold text-slate-900">
-                  ₹{pricing.itemsTotal.toLocaleString('en-IN')}
-                </span>
+      <aside className="space-y-4 lg:sticky lg:top-24 lg:self-start">
+        <section className="rounded-3xl border border-slate-200 bg-white p-5">
+          <h2 className="flex items-center gap-2 text-sm font-bold text-slate-900"><TicketPercent className="size-4 text-emerald-600" />Coupons & offers</h2>
+          {appliedCoupon
+            ? <div className={`mt-3 flex items-center justify-between gap-3 rounded-2xl border p-3 ${couponError ? 'border-amber-200 bg-amber-50' : 'border-emerald-200 bg-emerald-50'}`}>
+                <div className="min-w-0"><p className="font-mono text-sm font-bold tracking-wider text-slate-900">{appliedCoupon.code}</p><p className={`text-xs ${couponError ? 'text-amber-800' : 'text-emerald-800'}`}>{couponError || `You save ${inr(appliedCoupon.discountAmount)}`}</p></div>
+                <button onClick={() => void removeCoupon().catch((err) => toast.error(errorMessage(err)))} aria-label="Remove coupon" className="grid size-8 place-items-center rounded-full text-slate-500 hover:bg-white"><X className="size-4" /></button>
               </div>
-              <div className="flex justify-between">
-                <span>Shipping Fee</span>
-                <span>
-                  {pricing.shippingFee === 0 ? (
-                    <span className="font-bold text-emerald-600">FREE</span>
-                  ) : (
-                    `₹${pricing.shippingFee}`
-                  )}
-                </span>
-              </div>
-              <div className="flex justify-between">
-                <span>Estimated GST (18%)</span>
-                <span>₹{pricing.taxTotal.toLocaleString('en-IN')}</span>
-              </div>
-              {pricing.discountTotal > 0 && (
-                <div className="flex justify-between text-emerald-600 font-semibold">
-                  <span>Coupon Discount</span>
-                  <span>-₹{pricing.discountTotal.toLocaleString('en-IN')}</span>
-                </div>
-              )}
-            </div>
+            : <form onSubmit={(event: FormEvent) => { event.preventDefault(); void submitCoupon(code); }} className="mt-3 flex gap-2">
+                <input value={code} onChange={(event) => setCode(event.target.value.toUpperCase())} placeholder="Enter coupon code" aria-label="Coupon code" className="min-w-0 flex-1 rounded-xl border border-slate-200 px-3.5 py-2.5 font-mono text-sm uppercase tracking-wider outline-none placeholder:font-sans placeholder:normal-case placeholder:tracking-normal focus:border-emerald-600" />
+                <button disabled={applying || !code.trim()} className="rounded-xl bg-slate-900 px-4 text-sm font-bold text-white hover:bg-emerald-700 disabled:opacity-40">{applying ? <Loader2 className="size-4 animate-spin" /> : 'Apply'}</button>
+              </form>}
+          {couponError && <p className="mt-2 flex items-start gap-1.5 text-xs text-amber-700"><CircleAlert className="mt-0.5 size-3.5 shrink-0" />The discount is paused until this is resolved.</p>}
+          {offers.length > 0 && <div className="mt-4 space-y-2">{offers.slice(0, 3).map((offer) => <OfferTicket key={offer._id} offer={offer} applied={appliedCoupon?.code === offer.code && !couponError} onApply={(value) => void submitCoupon(value)} />)}</div>}
+        </section>
 
-            <div className="flex justify-between items-baseline pt-1">
-              <span className="text-sm font-bold text-slate-900">Grand Total</span>
-              <span className="text-2xl font-extrabold text-slate-900">
-                ₹{pricing.grandTotal.toLocaleString('en-IN')}
-              </span>
-            </div>
+        <section className="rounded-3xl border border-slate-200 bg-white p-5">
+          <h2 className="text-sm font-bold text-slate-900">Order summary</h2>
+          <dl className="mt-4 space-y-2.5 text-sm">
+            <div className="flex justify-between text-slate-600"><dt>Items ({itemCount})</dt><dd className="font-semibold text-slate-900">{inr(pricing.itemsTotal)}</dd></div>
+            {pricing.discountTotal > 0 && <div className="flex justify-between text-emerald-700"><dt>Coupon {appliedCoupon?.code}</dt><dd className="font-semibold">−{inr(pricing.discountTotal)}</dd></div>}
+            <div className="flex justify-between text-slate-600"><dt>Delivery</dt><dd className={pricing.shippingFee === 0 ? 'font-bold text-emerald-700' : 'font-semibold text-slate-900'}>{pricing.shippingFee === 0 ? 'FREE' : inr(pricing.shippingFee)}</dd></div>
+            <div className="flex justify-between text-slate-600"><dt>GST (18%)</dt><dd className="font-semibold text-slate-900">{inr(pricing.taxTotal)}</dd></div>
+            <div className="flex items-baseline justify-between border-t border-dashed border-slate-200 pt-3"><dt className="font-bold text-slate-900">Total</dt><dd className="text-2xl font-extrabold text-slate-950">{inr(pricing.grandTotal)}</dd></div>
+          </dl>
+          {totalSavings > 0 && <p className="mt-3 rounded-xl bg-emerald-50 px-3 py-2 text-center text-xs font-bold text-emerald-800">You are saving {inr(totalSavings)} on this order</p>}
+          <Link href="/checkout" className="mt-5 hidden items-center justify-center gap-2 rounded-2xl bg-emerald-600 py-4 text-sm font-bold text-white shadow-lg shadow-emerald-600/25 transition hover:bg-emerald-700 lg:flex"><Lock className="size-4" />Checkout securely<ArrowRight className="size-4" /></Link>
+          <p className="mt-3 text-center text-[11px] text-slate-400">Payments processed securely by Razorpay</p>
+        </section>
+      </aside>
+    </div>
 
-            <Link
-              href="/checkout"
-              className="w-full py-4 px-6 rounded-2xl bg-gradient-to-r from-emerald-600 to-teal-600 hover:from-emerald-500 hover:to-teal-500 text-white font-bold text-sm shadow-md shadow-emerald-600/25 transition flex items-center justify-center gap-2 group text-center"
-            >
-              <span>Proceed to Checkout</span>
-              <ArrowRight className="w-4 h-4 group-hover:translate-x-1 transition-transform" />
-            </Link>
-
-            <div className="flex items-center justify-center gap-2 text-[11px] text-slate-400">
-              <ShieldCheck className="w-4 h-4 text-emerald-600" />
-              <span>Safe & Secure 256-bit SSL Checkout</span>
-            </div>
-          </div>
-        </div>
+    <div className="fixed inset-x-0 bottom-0 z-40 border-t border-slate-200 bg-white/95 p-3 shadow-[0_-8px_24px_rgba(15,23,42,0.08)] backdrop-blur lg:hidden">
+      <div className="mx-auto flex max-w-lg items-center gap-3">
+        <div className="min-w-0"><p className="text-[11px] text-slate-500">Total{totalSavings > 0 ? ` · saving ${inr(totalSavings)}` : ''}</p><p className="text-lg font-extrabold">{inr(pricing.grandTotal)}</p></div>
+        <Link href="/checkout" className="flex h-12 flex-1 items-center justify-center gap-2 rounded-2xl bg-emerald-600 text-sm font-bold text-white shadow-lg shadow-emerald-600/25">{loading ? <Loader2 className="size-4 animate-spin" /> : <Lock className="size-4" />}Checkout</Link>
       </div>
     </div>
-  );
+  </div>;
 }

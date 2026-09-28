@@ -63,6 +63,26 @@ export class CartController {
     }
   }
 
+  static async applyCoupon(req: Request, res: Response, next: NextFunction) {
+    try {
+      const { userId, sessionId } = getSessionIdentifiers(req);
+      const cart = await CartService.applyCoupon(userId, sessionId, req.body?.code);
+      res.status(200).json({ success: true, message: `Coupon ${cart.appliedCoupon?.code} applied`, data: cart });
+    } catch (err) {
+      next(err);
+    }
+  }
+
+  static async removeCoupon(req: Request, res: Response, next: NextFunction) {
+    try {
+      const { userId, sessionId } = getSessionIdentifiers(req);
+      const cart = await CartService.removeCoupon(userId, sessionId);
+      res.status(200).json({ success: true, message: 'Coupon removed', data: cart });
+    } catch (err) {
+      next(err);
+    }
+  }
+
   // Wishlist
   static async getWishlist(req: Request, res: Response, next: NextFunction) {
     try {
