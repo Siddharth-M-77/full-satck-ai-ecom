@@ -143,6 +143,16 @@ describe('Admin Panel, Analytics & Inventory Logs Integration Tests', () => {
     expect(res.body.success).toBe(true);
     expect(res.body.data.overview.totalRevenue).toBe(19999);
     expect(res.body.data.overview.totalOrders).toBe(1);
+    expect(res.body.data.salesPeriods.today).toMatchObject({ revenue: 19999, orders: 1 });
+    expect(res.body.data.salesPeriods.last7Days).toMatchObject({ revenue: 19999, orders: 1 });
+    expect(res.body.data.salesPeriods.last30Days).toMatchObject({ revenue: 19999, orders: 1 });
+    expect(res.body.data.inventory).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        productId: testProduct._id.toString(),
+        sku: 'NC-BLK-01',
+        stock: 15,
+      }),
+    ]));
     expect(res.body.data.recentOrders).toHaveLength(1);
   });
 

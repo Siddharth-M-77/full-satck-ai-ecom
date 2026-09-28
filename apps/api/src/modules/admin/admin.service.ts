@@ -34,83 +34,150 @@ export class AdminService {
   }
 
   static async getDashboardAnalytics() {
-    const thirtyDaysAgo = new Date();
-    thirtyDaysAgo.setDate(thirtyDaysAgo.getDate() - 30);
+    const now = new Date();
+    const todayStart = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate()));
+    const weekStart = new Date(todayStart);
+    weekStart.setUTCDate(weekStart.getUTCDate() - 6);
+    const monthStart = new Date(todayStart);
+    monthStart.setUTCDate(monthStart.getUTCDate() - 29);
+    const paidStatuses = [ORDER_STATUS.PAID, ORDER_STATUS.PROCESSING, ORDER_STATUS.SHIPPED, ORDER_STATUS.DELIVERED];
 
-    const sevenDaysAgo = new Date();
-    sevenDaysAgo.setDate(sevenDaysAgo.getDate() - 7);
+    const yesterdayStart = new Date(todayStart);
+    yesterdayStart.setUTCDate(yesterdayStart.getUTCDate() - 1);
+    const previousWeekStart = new Date(weekStart);
+    previousWeekStart.setUTCDate(previousWeekStart.getUTCDate() - 7);
+    const previousMonthStart = new Date(monthStart);
+    previousMonthStart.setUTCDate(previousMonthStart.getUTCDate() - 30);
 
-    // 1. Revenue & Orders Aggregation
-    const [salesSummary, monthSalesSummary, recentOrders, lowStockItems, topProducts] =
+    const summarizeSales = async (startDate: Date, endDate: Date = now) => {
+      const [summary] = await Order.aggregate([
+        { $match: { createdAt: { $gte: startDate, $lt: endDate === now ? new Date(now.getTime() + 1) : endDate }, status: { $in: paidStatuses } } },
+        {
+          $group: {
+            _id: null,
+            revenue: { $sum: '$pricing.grandTotal' },
+            orders: { $sum: 1 },
+            averageOrderValue: { $avg: '$pricing.grandTotal' },
+          },
+        },
+      ]);
+      return {
+        revenue: summary?.revenue || 0,
+        orders: summary?.orders || 0,
+        averageOrderValue: Math.round(summary?.averageOrderValue || 0),
+      };
+    };
+
+    const [
+      today, last7Days, last30Days,
+      yesterday, previous7Days, previous30Days,
+      pendingOrders, recentOrders, lowStockItems, topProducts, products, trendRows,
+      statusRows, categoryRows, totalCustomers, newCustomers, blockedCustomers,
+    ] =
       await Promise.all([
-        Order.aggregate([
-          { $match: { status: { $in: [ORDER_STATUS.PAID, ORDER_STATUS.PROCESSING, ORDER_STATUS.SHIPPED, ORDER_STATUS.DELIVERED] } } },
-          {
-            $group: {
-              _id: null,
-              totalRevenue: { $sum: '$pricing.grandTotal' },
-              totalOrders: { $sum: 1 },
-              avgOrderValue: { $avg: '$pricing.grandTotal' },
-            },
-          },
-        ]),
-
-        Order.aggregate([
-          {
-            $match: {
-              createdAt: { $gte: thirtyDaysAgo },
-              status: { $in: [ORDER_STATUS.PAID, ORDER_STATUS.PROCESSING, ORDER_STATUS.SHIPPED, ORDER_STATUS.DELIVERED] },
-            },
-          },
-          { $group: { _id: null, revenue: { $sum: '$pricing.grandTotal' }, orders: { $sum: 1 } } },
-        ]),
-
+        summarizeSales(todayStart),
+        summarizeSales(weekStart),
+        summarizeSales(monthStart),
+        summarizeSales(yesterdayStart, todayStart),
+        summarizeSales(previousWeekStart, weekStart),
+        summarizeSales(previousMonthStart, monthStart),
+        Order.countDocuments({ status: ORDER_STATUS.PENDING_PAYMENT }),
         Order.find().sort({ createdAt: -1 }).limit(8).lean(),
-
         this.getLowStock(5),
-
         Product.find({ salesCount: { $gt: 0 } })
           .sort({ salesCount: -1 })
           .limit(5)
           .select('title slug basePrice salesCount rating variants')
           .lean(),
+        Product.find()
+          .select('title slug status variants')
+          .sort({ title: 1 })
+          .lean(),
+        Order.aggregate([
+          {
+            $match: {
+              createdAt: { $gte: monthStart, $lte: now },
+              status: { $in: paidStatuses },
+            },
+          },
+          {
+            $group: {
+              _id: { $dateToString: { format: '%Y-%m-%d', date: '$createdAt', timezone: 'UTC' } },
+              revenue: { $sum: '$pricing.grandTotal' },
+              orders: { $sum: 1 },
+            },
+          },
+          { $sort: { _id: 1 } },
+        ]),
+        Order.aggregate<{ _id: string; count: number }>([
+          { $match: { createdAt: { $gte: monthStart, $lte: now } } },
+          { $group: { _id: '$status', count: { $sum: 1 } } },
+          { $sort: { count: -1 } },
+        ]),
+        Order.aggregate<{ _id: string; name: string; revenue: number; units: number }>([
+          { $match: { createdAt: { $gte: monthStart, $lte: now }, status: { $in: paidStatuses } } },
+          { $unwind: '$items' },
+          { $lookup: { from: 'products', localField: 'items.productId', foreignField: '_id', as: 'product' } },
+          { $unwind: { path: '$product', preserveNullAndEmptyArrays: true } },
+          { $lookup: { from: 'categories', localField: 'product.categoryId', foreignField: '_id', as: 'category' } },
+          { $unwind: { path: '$category', preserveNullAndEmptyArrays: true } },
+          {
+            $group: {
+              _id: { $ifNull: ['$category._id', 'uncategorized'] },
+              name: { $first: { $ifNull: ['$category.name', 'Uncategorized'] } },
+              revenue: { $sum: '$items.subtotal' },
+              units: { $sum: '$items.quantity' },
+            },
+          },
+          { $sort: { revenue: -1 } },
+          { $limit: 8 },
+        ]),
+        User.countDocuments({ role: USER_ROLES.CUSTOMER }),
+        User.countDocuments({ role: USER_ROLES.CUSTOMER, createdAt: { $gte: monthStart } }),
+        User.countDocuments({ role: USER_ROLES.CUSTOMER, isBlocked: true }),
       ]);
 
-    const metrics = salesSummary[0] || {
-      totalRevenue: 0,
-      totalOrders: 0,
-      avgOrderValue: 0,
-    };
+    const trendByDate = new Map(trendRows.map((row) => [row._id, row]));
+    const salesTrend = Array.from({ length: 30 }, (_, index) => {
+      const day = new Date(monthStart);
+      day.setUTCDate(monthStart.getUTCDate() + index);
+      const date = day.toISOString().slice(0, 10);
+      const row = trendByDate.get(date);
+      return { _id: date, revenue: row?.revenue || 0, orders: row?.orders || 0 };
+    });
 
-    // 2. Daily Sales Trend for last 7 days
-    const salesTrend = await Order.aggregate([
-      {
-        $match: {
-          createdAt: { $gte: sevenDaysAgo },
-          status: { $in: [ORDER_STATUS.PAID, ORDER_STATUS.PROCESSING, ORDER_STATUS.SHIPPED, ORDER_STATUS.DELIVERED] },
-        },
-      },
-      {
-        $group: {
-          _id: { $dateToString: { format: '%Y-%m-%d', date: '$createdAt' } },
-          revenue: { $sum: '$pricing.grandTotal' },
-          orders: { $sum: 1 },
-        },
-      },
-      { $sort: { _id: 1 } },
-    ]);
+    const inventory = products.flatMap((product) =>
+      product.variants.map((variant) => ({
+        productId: product._id,
+        title: product.title,
+        slug: product.slug,
+        productStatus: product.status,
+        sku: variant.sku,
+        attributes: variant.attributes,
+        price: variant.price,
+        stock: variant.stock,
+        lowStock: variant.stock <= 5,
+      }))
+    );
 
     return {
       overview: {
-        totalRevenue: monthSalesSummary[0]?.revenue || 0,
-        totalOrders: metrics.totalOrders,
-        avgOrderValue: Math.round(metrics.avgOrderValue),
+        totalRevenue: last30Days.revenue,
+        totalOrders: last30Days.orders,
+        avgOrderValue: last30Days.averageOrderValue,
         lowStockCount: lowStockItems.length,
+        pendingOrders,
+        totalProducts: products.length,
+        totalVariants: inventory.length,
+        totalUnitsInStock: inventory.reduce((sum, variant) => sum + variant.stock, 0),
+        outOfStockCount: inventory.filter((variant) => variant.stock === 0).length,
       },
+      salesPeriods: { today, last7Days, last30Days },
       salesTrend,
       recentOrders,
       lowStockProducts: lowStockItems,
       topProducts,
+      inventory,
     };
   }
 

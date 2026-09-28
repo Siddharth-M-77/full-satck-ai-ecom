@@ -1,8 +1,8 @@
 import { useEffect, useState, type FormEvent } from 'react';
 import {
-  Activity, Boxes, CircleDollarSign,
+  Activity, Boxes, CircleDollarSign, Clock3,
   ClipboardList, CreditCard, LayoutDashboard, LogIn, LogOut, Package, Plus, RefreshCw,
-  Search, ShieldAlert, ShoppingCart, Tag, Users, X,
+  Search, ShoppingCart, Tag, Users, X,
 } from 'lucide-react';
 import { adminFetch } from './lib/api';
 
@@ -14,7 +14,10 @@ type Order = { _id: string; orderNumber: string; status: string; createdAt: stri
 type Coupon = { _id: string; code: string; discountType: 'flat' | 'percentage'; discountValue: number; minOrderValue: number; endDate: string; isActive: boolean; usedCount: number };
 type LowStock = { productId: string; title: string; slug: string; sku: string; stock: number; threshold: number };
 type Customer = { _id: string; name: string; email: string; isBlocked: boolean; createdAt: string };
-type Dashboard = { overview: { totalRevenue: number; totalOrders: number; avgOrderValue: number; lowStockCount: number }; salesTrend: Array<{ _id: string; revenue: number; orders: number }>; recentOrders: Order[]; lowStockProducts: LowStock[]; topProducts: Array<{ _id: string; title: string; salesCount: number }> };
+type SalesSummary = { revenue: number; orders: number; averageOrderValue: number };
+type InventoryRow = { productId: string; title: string; slug: string; productStatus: string; sku: string; attributes?: Record<string, string>; price: number; stock: number; lowStock: boolean };
+type SalesPeriod = 'today' | 'last7Days' | 'last30Days';
+type Dashboard = { overview: { totalRevenue: number; totalOrders: number; avgOrderValue: number; lowStockCount: number; pendingOrders: number; totalProducts: number; totalVariants: number; totalUnitsInStock: number; outOfStockCount: number }; salesPeriods: Record<SalesPeriod, SalesSummary>; inventory: InventoryRow[]; salesTrend: Array<{ _id: string; revenue: number; orders: number }>; recentOrders: Order[]; lowStockProducts: LowStock[]; topProducts: Array<{ _id: string; title: string; salesCount: number }> };
 type Category = { _id: string; name: string; slug: string };
 
 const sections: Array<{ id: Section; label: string; icon: typeof LayoutDashboard }> = [
@@ -44,6 +47,7 @@ export default function App() {
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [section, setSection] = useState<Section>('overview');
+  const [salesPeriod, setSalesPeriod] = useState<SalesPeriod>('today');
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
   const [notice, setNotice] = useState('');
@@ -57,6 +61,7 @@ export default function App() {
   const [audit, setAudit] = useState<Array<Record<string, unknown>>>([]);
   const [search, setSearch] = useState('');
   const [threshold, setThreshold] = useState(5);
+  const [inventorySearch, setInventorySearch] = useState('');
   const [productDialog, setProductDialog] = useState<Product | null | false>(false);
   const [variantDrafts, setVariantDrafts] = useState<VariantDraft[]>([]);
   const [couponDialog, setCouponDialog] = useState<Coupon | null | false>(false);
@@ -274,12 +279,18 @@ export default function App() {
   const Icon = current.icon;
   const editingProduct = productDialog === false ? null : productDialog;
   const editingCoupon = couponDialog === false ? null : couponDialog;
+  const selectedSales = dashboard?.salesPeriods[salesPeriod] || { revenue: 0, orders: 0, averageOrderValue: 0 };
+  const salesPeriodLabel = salesPeriod === 'today' ? 'Today' : salesPeriod === 'last7Days' ? 'Last 7 days' : 'Last 30 days';
   const metricRows: Array<{ label: string; value: string | number; icon: typeof CircleDollarSign }> = dashboard ? [
-    { label: '30-day revenue', value: money(dashboard.overview.totalRevenue), icon: CircleDollarSign },
-    { label: 'Orders', value: dashboard.overview.totalOrders, icon: ShoppingCart },
-    { label: 'Average order', value: money(dashboard.overview.avgOrderValue), icon: CreditCard },
-    { label: 'Low-stock variants', value: dashboard.overview.lowStockCount, icon: ShieldAlert },
+    { label: `${salesPeriodLabel} revenue`, value: money(selectedSales.revenue), icon: CircleDollarSign },
+    { label: `${salesPeriodLabel} paid orders`, value: selectedSales.orders, icon: ShoppingCart },
+    { label: 'Average order value', value: money(selectedSales.averageOrderValue), icon: CreditCard },
+    { label: 'Awaiting payment', value: dashboard.overview.pendingOrders, icon: Clock3 },
   ] : [];
+  const visibleInventory = dashboard?.inventory.filter((item) => {
+    const query = inventorySearch.trim().toLowerCase();
+    return !query || item.title.toLowerCase().includes(query) || item.sku.toLowerCase().includes(query);
+  }) || [];
   const modal = (open: boolean, close: () => void, title: string, content: React.ReactNode) => open && <div className="fixed inset-0 z-50 grid place-items-center bg-slate-950/40 p-4" onMouseDown={(event) => { if (event.target === event.currentTarget) close(); }}><section className="max-h-[90vh] w-full max-w-2xl overflow-y-auto border border-slate-200 bg-white p-5 shadow-xl sm:p-7"><header className="mb-5 flex items-center justify-between"><h2 className="font-serif text-xl font-bold text-slate-950">{title}</h2><button onClick={close} aria-label="Close" className="grid size-9 place-items-center hover:bg-slate-100"><X className="size-4" /></button></header>{content}</section></div>;
 
   return <div className="min-h-screen bg-[#f5f7f4] text-slate-900">
@@ -287,9 +298,9 @@ export default function App() {
       <div className="flex items-center gap-3"><span className="grid size-8 place-items-center bg-emerald-800 text-white"><Package className="size-4" /></span><strong className="text-sm">ShopSense <span className="font-normal text-slate-400">/ Admin</span></strong></div>
       <div className="flex items-center gap-2"><span className="hidden text-xs text-slate-500 sm:inline">Store operations</span><button title="Sign out" onClick={signOut} className="grid size-9 place-items-center text-slate-600 hover:bg-slate-100"><LogOut className="size-4" /></button></div>
     </header>
-    <div className="mx-auto grid max-w-[1600px] lg:grid-cols-[220px_minmax(0,1fr)]">
-      <aside className="border-b border-slate-200 bg-white p-3 lg:min-h-[calc(100vh-56px)] lg:border-b-0 lg:border-r lg:p-4">
-        <nav className="flex gap-1 overflow-x-auto lg:block lg:space-y-1">{sections.map(({ id, label, icon: ItemIcon }) => <button key={id} onClick={() => { setSection(id); setError(''); setNotice(''); }} className={`flex shrink-0 items-center gap-3 px-3 py-2.5 text-left text-xs font-semibold transition lg:w-full ${section === id ? 'bg-emerald-50 text-emerald-900' : 'text-slate-600 hover:bg-slate-50'}`}><ItemIcon className="size-4" />{label}</button>)}</nav>
+    <div className="mx-auto grid min-w-0 max-w-[1600px] grid-cols-1 lg:grid-cols-[220px_minmax(0,1fr)]">
+      <aside className="min-w-0 border-b border-slate-200 bg-white p-3 lg:min-h-[calc(100vh-56px)] lg:border-b-0 lg:border-r lg:p-4">
+        <nav className="grid grid-cols-2 gap-1 sm:grid-cols-4 lg:block lg:space-y-1">{sections.map(({ id, label, icon: ItemIcon }) => <button key={id} onClick={() => { setSection(id); setError(''); setNotice(''); }} className={`flex min-w-0 w-full items-center gap-2 px-2.5 py-2.5 text-left text-[11px] font-semibold transition sm:gap-3 sm:px-3 sm:text-xs lg:gap-3 ${section === id ? 'bg-emerald-50 text-emerald-900' : 'text-slate-600 hover:bg-slate-50'}`}><ItemIcon className="size-4 shrink-0" /><span className="truncate">{label}</span></button>)}</nav>
         <div className="mt-8 hidden border-t border-slate-200 pt-4 lg:block"><p className="text-[10px] font-bold uppercase text-slate-400">Live catalog</p><p className="mt-1 text-xs text-slate-600">MongoDB connected through API</p></div>
       </aside>
 
@@ -302,9 +313,37 @@ export default function App() {
         {notice && <div role="status" className="mb-4 flex items-center justify-between border border-emerald-200 bg-emerald-50 px-4 py-3 text-sm text-emerald-900"><span>{notice}</span><button onClick={() => setNotice('')} aria-label="Dismiss" className="p-1"><X className="size-4" /></button></div>}
 
         {section === 'overview' && dashboard && <>
+          <div className="mb-3 flex flex-wrap items-center justify-between gap-3">
+            <p className="min-w-0 text-xs text-slate-500">Paid and fulfilled orders only · amounts in INR</p>
+            <div className="inline-flex border border-slate-300 bg-white p-0.5" role="group" aria-label="Sales period">
+              {([
+                ['today', 'Today'],
+                ['last7Days', '7 days'],
+                ['last30Days', '30 days'],
+              ] as Array<[SalesPeriod, string]>).map(([period, label]) => <button key={period} type="button" onClick={() => setSalesPeriod(period)} aria-pressed={salesPeriod === period} className={`px-3 py-1.5 text-[10px] font-semibold ${salesPeriod === period ? 'bg-emerald-800 text-white' : 'text-slate-600 hover:bg-slate-100'}`}>{label}</button>)}
+            </div>
+          </div>
           <div className="grid grid-cols-2 border-y border-slate-200 bg-white md:grid-cols-4">{metricRows.map(({ label, value, icon: MetricIcon }) => <div key={label} className="border-b border-r border-slate-200 p-4 md:border-b-0"><MetricIcon className="size-4 text-emerald-800" /><p className="mt-3 text-[10px] font-bold uppercase text-slate-500">{label}</p><p className="mt-1 text-xl font-bold text-slate-950">{value}</p></div>)}</div>
-          <div className="mt-7 grid gap-7 xl:grid-cols-[1.3fr_1fr]"><section><div className="mb-3 flex items-center justify-between"><h2 className="font-serif text-lg font-bold">Sales, last 7 days</h2><Activity className="size-4 text-emerald-800" /></div><div className="flex h-44 items-end gap-2 border-b border-l border-slate-300 bg-white px-3 pt-4">{dashboard.salesTrend.map((day) => { const max = Math.max(1, ...dashboard.salesTrend.map((entry) => entry.revenue)); return <div key={day._id} className="flex h-full flex-1 flex-col justify-end text-center"><div title={`${money(day.revenue)} · ${day.orders} orders`} className="mx-auto w-full max-w-12 bg-emerald-700" style={{ height: `${Math.max(4, day.revenue / max * 100)}%` }} /><span className="truncate py-2 text-[9px] text-slate-500">{day._id.slice(5)}</span></div>; })}</div></section><section><h2 className="mb-3 font-serif text-lg font-bold">Low stock</h2><div className="divide-y divide-slate-200 border-y border-slate-200 bg-white">{dashboard.lowStockProducts.slice(0, 6).map((item) => <div key={`${item.productId}-${item.sku}`} className="flex justify-between gap-3 px-3 py-2.5 text-xs"><span className="min-w-0 truncate font-semibold">{item.title}<span className="ml-2 font-normal text-slate-500">{item.sku}</span></span><span className="shrink-0 font-bold text-rose-700">{item.stock} left</span></div>)}{!dashboard.lowStockProducts.length && <p className="p-4 text-sm text-slate-500">No variants below threshold.</p>}</div></section></div>
-          <section className="mt-7"><h2 className="mb-3 font-serif text-lg font-bold">Recent orders</h2><OrderTable orders={dashboard.recentOrders} onStatus={updateOrder} onRefund={refundOrder} /></section>
+
+          <div className="mt-3 grid grid-cols-2 border-y border-slate-200 bg-white sm:grid-cols-4">
+            {[
+              ['Products', dashboard.overview.totalProducts],
+              ['Sellable variants', dashboard.overview.totalVariants],
+              ['Units in stock', dashboard.overview.totalUnitsInStock],
+              ['Out of stock', dashboard.overview.outOfStockCount],
+            ].map(([label, value]) => <div key={String(label)} className="border-b border-r border-slate-200 px-4 py-3 last:border-r-0 sm:border-b-0"><p className="text-[9px] font-bold uppercase text-slate-500">{label}</p><p className={`mt-1 text-base font-bold ${label === 'Out of stock' && Number(value) > 0 ? 'text-rose-700' : 'text-slate-950'}`}>{value}</p></div>)}
+          </div>
+
+          <div className="mt-7 grid min-w-0 grid-cols-1 gap-7 xl:grid-cols-[1.25fr_1fr]">
+            <section className="min-w-0"><div className="mb-3 flex items-center justify-between"><div className="min-w-0"><h2 className="font-serif text-lg font-bold">Sales trend · last 7 days</h2><p className="text-[10px] text-slate-500">Revenue and paid-order count by UTC day</p></div><Activity className="size-4 shrink-0 text-emerald-800" /></div><div className="flex h-48 min-w-0 items-end gap-2 border-b border-l border-slate-300 bg-white px-3 pt-4">{dashboard.salesTrend.map((day) => { const max = Math.max(1, ...dashboard.salesTrend.map((entry) => entry.revenue)); return <div key={day._id} className="flex h-full min-w-0 flex-1 flex-col justify-end text-center"><div title={`${money(day.revenue)} · ${day.orders} orders`} className="mx-auto w-full max-w-12 bg-emerald-700" style={{ height: `${Math.max(4, day.revenue / max * 100)}%` }} /><span className="truncate py-2 text-[9px] text-slate-500">{day._id.slice(5)}</span></div>; })}</div></section>
+            <div className="min-w-0 space-y-7">
+              <section><h2 className="mb-3 font-serif text-lg font-bold">Low-stock alerts <span className="ml-1 text-sm font-normal text-rose-700">{dashboard.lowStockProducts.length}</span></h2><div className="divide-y divide-slate-200 border-y border-slate-200 bg-white">{dashboard.lowStockProducts.slice(0, 6).map((item) => <div key={`${item.productId}-${item.sku}`} className="flex justify-between gap-3 px-3 py-2.5 text-xs"><span className="min-w-0 truncate font-semibold">{item.title}<span className="ml-2 font-normal text-slate-500">{item.sku}</span></span><span className="shrink-0 font-bold text-rose-700">{item.stock} left</span></div>)}{!dashboard.lowStockProducts.length && <p className="p-4 text-sm text-slate-500">No variants at or below 5 units.</p>}</div></section>
+              <section><h2 className="mb-3 font-serif text-lg font-bold">Top-selling products</h2><div className="divide-y divide-slate-200 border-y border-slate-200 bg-white">{dashboard.topProducts.map((product, index) => <div key={product._id} className="flex items-center justify-between gap-3 px-3 py-2.5 text-xs"><span className="min-w-0 truncate"><span className="mr-2 text-slate-400">{index + 1}.</span><span className="font-semibold">{product.title}</span></span><span className="shrink-0 text-slate-600">{product.salesCount} sold</span></div>)}{!dashboard.topProducts.length && <p className="p-4 text-sm text-slate-500">Sales leaders appear after completed orders.</p>}</div></section>
+            </div>
+          </div>
+
+          <section className="mt-8"><div className="mb-3 flex flex-wrap items-end justify-between gap-3"><div><h2 className="font-serif text-lg font-bold">Stock remaining · every variant</h2><p className="text-[10px] text-slate-500">{dashboard.inventory.length} SKUs across {dashboard.overview.totalProducts} products</p></div><div className="flex items-center gap-2 border border-slate-300 bg-white px-3"><Search className="size-3.5 text-slate-400" /><input value={inventorySearch} onChange={(event) => setInventorySearch(event.target.value)} placeholder="Search product or SKU" className="w-48 py-2 text-xs outline-none" /></div></div><div className="max-h-[440px] overflow-auto border-y border-slate-200 bg-white"><table className="w-full min-w-[760px] text-left text-xs"><thead className="sticky top-0 bg-slate-100 text-[10px] uppercase text-slate-500"><tr><th className="px-3 py-3">Product</th><th className="px-3 py-3">Variant / SKU</th><th className="px-3 py-3">Price</th><th className="px-3 py-3">Status</th><th className="px-3 py-3">Remaining</th><th className="px-3 py-3">Action</th></tr></thead><tbody className="divide-y divide-slate-200">{visibleInventory.map((item) => <tr key={`${item.productId}-${item.sku}`}><td className="max-w-64 px-3 py-2.5"><p className="truncate font-semibold">{item.title}</p><p className="text-[9px] text-slate-500">{item.slug}</p></td><td className="px-3 py-2.5"><p>{Object.values(item.attributes || {}).join(' / ') || 'Standard'}</p><p className="font-mono text-[10px] text-slate-500">{item.sku}</p></td><td className="px-3 py-2.5">{money(item.price)}</td><td className="px-3 py-2.5 text-[10px]">{item.productStatus}</td><td className={`px-3 py-2.5 font-bold ${item.stock === 0 ? 'text-rose-800' : item.lowStock ? 'text-amber-700' : 'text-slate-900'}`}>{item.stock}{item.stock === 0 ? ' · OUT' : item.lowStock ? ' · LOW' : ''}</td><td className="px-3 py-2.5"><button onClick={() => { setStockTarget({ productId: item.productId, title: item.title, slug: item.slug, sku: item.sku, stock: item.stock, threshold: 5 }); setStockDelta(1); }} className="font-semibold text-emerald-800 hover:underline">Adjust</button></td></tr>)}</tbody></table>{!visibleInventory.length && <p className="p-5 text-sm text-slate-500">No matching inventory.</p>}</div></section>
+          <section className="mt-8"><h2 className="mb-3 font-serif text-lg font-bold">Recent orders</h2><OrderTable orders={dashboard.recentOrders} onStatus={updateOrder} onRefund={refundOrder} /></section>
         </>}
 
         {section === 'products' && <><div className="mb-4 flex max-w-md items-center gap-2 border border-slate-300 bg-white px-3"><Search className="size-4 text-slate-400" /><input value={search} onChange={(event) => setSearch(event.target.value)} onKeyDown={(event) => { if (event.key === 'Enter') void refresh('products'); }} placeholder="Search product title or SKU" className="w-full py-2.5 text-sm outline-none" /></div><div className="overflow-x-auto border-y border-slate-200 bg-white"><table className="w-full min-w-[760px] text-left text-xs"><thead className="bg-slate-100 text-[10px] uppercase text-slate-500"><tr><th className="px-3 py-3">Product</th><th className="px-3 py-3">Category</th><th className="px-3 py-3">Variants / Stock</th><th className="px-3 py-3">Price</th><th className="px-3 py-3">Status</th><th className="px-3 py-3">Actions</th></tr></thead><tbody className="divide-y divide-slate-200">{products.map((product) => <tr key={product._id}><td className="max-w-64 px-3 py-3"><p className="truncate font-semibold">{product.title}</p><p className="mt-1 text-[10px] text-slate-500">{product.slug}</p></td><td className="px-3 py-3">{typeof product.categoryId === 'object' ? product.categoryId.name : '—'}</td><td className="px-3 py-3">{product.variants.map((variant) => <p key={variant.sku}>{variant.sku} <span className={variant.stock <= threshold ? 'font-bold text-rose-700' : 'text-slate-500'}>· {variant.stock}</span></p>)}</td><td className="px-3 py-3 font-semibold">{money(product.basePrice)}</td><td className="px-3 py-3"><span className="border border-slate-200 px-2 py-1 text-[10px]">{product.status}</span></td><td className="px-3 py-3"><button onClick={() => setProductDialog(product)} className="mr-3 font-semibold text-emerald-800 hover:underline">Edit</button><button onClick={() => void archiveProduct(product)} className="text-rose-700 hover:underline">Archive</button></td></tr>)}</tbody></table>{!products.length && !loading && <p className="p-6 text-sm text-slate-500">No products found.</p>}</div></>}
