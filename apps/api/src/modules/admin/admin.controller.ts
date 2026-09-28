@@ -91,14 +91,14 @@ export class AdminController {
         status,
         timestamp: new Date(),
         comment: comment || `Status updated from ${prevStatus} to ${status} by admin`,
-        updatedBy: req.user ? new mongoose.Types.ObjectId(req.user.userId) : undefined,
+        updatedBy: req.user?._id,
       });
 
       await order.save();
 
       // Audit Log
       await AuditLog.create({
-        userId: new mongoose.Types.ObjectId(req.user?.userId),
+        userId: req.user?._id,
         userEmail: req.user?.email || 'admin@shopsense.ai',
         action: 'ORDER_STATUS_UPDATE',
         resourceType: 'Order',
@@ -114,12 +114,12 @@ export class AdminController {
 
   static async refundOrder(req: Request, res: Response, next: NextFunction) {
     try {
-      const { id } = req.params;
+      const id = String(req.params.id);
       const { reason } = req.body;
       const order = await AdminService.processRefund(
         id,
         reason,
-        req.user?.userId,
+        req.user?._id.toString(),
         req.user?.email
       );
       res.json({ success: true, data: order });
@@ -172,7 +172,7 @@ export class AdminController {
       await invalidateCatalogCache();
 
       await AuditLog.create({
-        userId: new mongoose.Types.ObjectId(req.user?.userId),
+        userId: req.user?._id,
         userEmail: req.user?.email || 'admin@shopsense.ai',
         action: 'PRODUCT_CREATED',
         resourceType: 'Product',
@@ -188,14 +188,14 @@ export class AdminController {
 
   static async updateProduct(req: Request, res: Response, next: NextFunction) {
     try {
-      const { id } = req.params;
+      const id = String(req.params.id);
       const product = await Product.findByIdAndUpdate(id, req.body, { new: true });
       if (!product) throw AppError.notFound('Product not found');
 
       await invalidateCatalogCache();
 
       await AuditLog.create({
-        userId: new mongoose.Types.ObjectId(req.user?.userId),
+        userId: req.user?._id,
         userEmail: req.user?.email || 'admin@shopsense.ai',
         action: 'PRODUCT_UPDATED',
         resourceType: 'Product',
@@ -221,7 +221,7 @@ export class AdminController {
         sku,
         changeQuantity,
         notes,
-        adminUserId: req.user!.userId,
+        adminUserId: req.user!._id.toString(),
         adminEmail: req.user!.email,
       });
 

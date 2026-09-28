@@ -3,7 +3,7 @@
 import Link from 'next/link';
 import { useAuthStore } from '../../stores/auth.store';
 import { useCartStore } from '../../stores/cart.store';
-import { Sparkles, ShoppingBag, User, LogOut, MapPin } from 'lucide-react';
+import { Sparkles, ShoppingBag, Heart, Search, User, LogOut, MapPin } from 'lucide-react';
 import { useState, useEffect } from 'react';
 
 export function Navbar() {
@@ -17,17 +17,17 @@ export function Navbar() {
 
   return (
     <header className="sticky top-0 z-50 backdrop-blur-md bg-white/85 border-b border-slate-200/80 transition-all">
-      <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 h-16 flex items-center justify-between">
+      <div className="max-w-7xl mx-auto flex h-16 items-center justify-between gap-2 px-3 sm:px-6 lg:px-8">
         {/* Brand Logo */}
         <Link href="/" className="flex items-center gap-2.5 group">
-          <div className="w-10 h-10 rounded-xl bg-gradient-to-tr from-emerald-600 to-teal-500 flex items-center justify-center text-white shadow-md shadow-emerald-500/20 group-hover:scale-105 transition-transform">
+          <div className="flex size-9 shrink-0 items-center justify-center rounded-lg bg-emerald-700 text-white transition-transform group-hover:scale-105 sm:size-10">
             <Sparkles className="w-5 h-5 text-white" />
           </div>
           <div className="flex flex-col">
-            <span className="font-extrabold text-xl tracking-tight text-slate-900 group-hover:text-emerald-600 transition-colors">
+            <span className="whitespace-nowrap text-lg font-extrabold text-slate-900 transition-colors group-hover:text-emerald-600 sm:text-xl">
               ShopSense<span className="text-emerald-600">AI</span>
             </span>
-            <span className="text-[10px] uppercase tracking-wider text-slate-400 font-semibold -mt-1">
+            <span className="-mt-1 hidden text-[10px] font-semibold uppercase tracking-wider text-slate-400 sm:block">
               Intelligent Commerce
             </span>
           </div>
@@ -56,8 +56,29 @@ export function Navbar() {
           </Link>
         </nav>
 
+        <form action="/catalog" className="mx-5 hidden max-w-sm flex-1 items-center rounded-full border border-slate-200 bg-slate-50 px-3 focus-within:border-emerald-600 xl:flex">
+          <Search className="size-4 shrink-0 text-slate-400" />
+          <input name="search" type="search" placeholder="Search products, brands..." className="w-full bg-transparent px-2.5 py-2 text-xs text-slate-900 outline-none" />
+        </form>
+
         {/* Right Auth & Cart Action Area */}
-        <div className="flex items-center gap-4">
+        <div className="flex shrink-0 items-center gap-1 sm:gap-3">
+          <Link
+            href="/catalog"
+            className="rounded-lg p-2 text-slate-600 transition hover:bg-emerald-50 hover:text-emerald-700 xl:hidden"
+            aria-label="Search products"
+            title="Search products"
+          >
+            <Search className="w-5 h-5" />
+          </Link>
+          <Link
+            href="/wishlist"
+            className="p-2 rounded-xl text-slate-600 hover:text-rose-600 hover:bg-rose-50 transition"
+            aria-label="Wishlist"
+            title="Wishlist"
+          >
+            <Heart className="w-5 h-5" />
+          </Link>
           <Link
             href="/cart"
             className="p-2 rounded-xl text-slate-600 hover:text-slate-900 hover:bg-slate-100 transition relative"
@@ -134,15 +155,16 @@ export function Navbar() {
             <div className="flex items-center gap-2">
               <Link
                 href="/login"
-                className="px-4 py-2 text-sm font-medium text-slate-700 hover:text-emerald-600 transition"
+                className="hidden whitespace-nowrap px-2 py-2 text-sm font-medium text-slate-700 transition hover:text-emerald-600 sm:inline-flex"
               >
                 Sign In
               </Link>
               <Link
                 href="/register"
-                className="px-4 py-2 rounded-xl bg-gradient-to-r from-emerald-600 to-teal-600 text-white text-sm font-semibold hover:from-emerald-500 hover:to-teal-500 shadow-sm shadow-emerald-600/20 transition-all hover:shadow"
+                className="whitespace-nowrap rounded-md bg-emerald-700 px-3 py-2 text-xs font-semibold text-white shadow-sm transition hover:bg-emerald-800 sm:px-4 sm:text-sm"
               >
-                Get Started
+                <span className="sm:hidden">Join</span>
+                <span className="hidden sm:inline">Get Started</span>
               </Link>
             </div>
           )}

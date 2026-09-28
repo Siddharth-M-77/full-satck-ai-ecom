@@ -8,6 +8,7 @@ import { Cart } from '../cart/cart.model.js';
 import { AppError } from '../../utils/app-error.js';
 import { ORDER_STATUS, OrderStatus, PAYMENT_METHODS, PaymentMethod } from '@shopsense/shared';
 import { getRazorpayClient } from '../../config/razorpay.js';
+import { env } from '../../config/env.js';
 import { logger } from '../../config/logger.js';
 
 // Order State Machine valid transition rules
@@ -145,7 +146,7 @@ export class OrderService {
     const discountTotal = cart.appliedCoupon?.discountAmount || 0;
     const shippingFee = itemsTotal > 999 ? 0 : 99;
     const taxTotal = Math.round(itemsTotal * 0.18);
-    const grandTotal = Math.max(0, itemsTotal - discountTotal + shippingFee);
+    const grandTotal = Math.max(0, itemsTotal - discountTotal + shippingFee + taxTotal);
 
     const orderNumber = `SS-${Date.now().toString(36).toUpperCase()}-${crypto.randomBytes(2).toString('hex').toUpperCase()}`;
     const orderId = new mongoose.Types.ObjectId();
@@ -194,43 +195,11 @@ export class OrderService {
 
     await order.save();
 
-    // Clear cart upon order placement
-    cart.items = [];
-    cart.appliedCoupon = undefined;
-    await cart.save();
-
     // 3. If Razorpay, initialize Razorpay Order
     let razorpayOrderData: any = null;
     if (order.paymentMethod === PAYMENT_METHODS.RAZORPAY) {
-      try {
-        const razorpay = getRazorpayClient();
-        const rzpOrder = await razorpay.orders.create({
-          amount: Math.round(grandTotal * 100), // paise
-          currency: 'INR',
-          receipt: order.orderNumber,
-        });
-
-        const payment = await Payment.create({
-          orderId: order._id,
-          razorpayOrderId: rzpOrder.id,
-          amount: Math.round(grandTotal * 100),
-          currency: 'INR',
-          status: 'created',
-        });
-
-        order.paymentId = payment._id;
-        await order.save();
-
-        razorpayOrderData = {
-          id: rzpOrder.id,
-          amount: rzpOrder.amount,
-          currency: rzpOrder.currency,
-          keyId: process.env.RAZORPAY_KEY_ID || 'rzp_test_placeholder',
-        };
-      } catch (err: unknown) {
-        logger.error({ err }, 'Razorpay order creation fallback in dev mode');
-        // Dev fallback if Razorpay credentials are test placeholders
-        const mockRzpId = `order_${crypto.randomBytes(8).toString('hex')}`;
+      if (env.NODE_ENV === 'test') {
+        const mockRzpId = `order_test_${crypto.randomBytes(8).toString('hex')}`;
         const payment = await Payment.create({
           orderId: order._id,
           razorpayOrderId: mockRzpId,
@@ -238,20 +207,55 @@ export class OrderService {
           currency: 'INR',
           status: 'created',
         });
+
         order.paymentId = payment._id;
         await order.save();
-
         razorpayOrderData = {
           id: mockRzpId,
           amount: Math.round(grandTotal * 100),
           currency: 'INR',
-          keyId: process.env.RAZORPAY_KEY_ID || 'rzp_test_placeholder',
+          keyId: env.RAZORPAY_KEY_ID || 'rzp_test_placeholder',
         };
+      } else {
+        try {
+          const razorpay = getRazorpayClient();
+          const rzpOrder = await razorpay.orders.create({
+            amount: Math.round(grandTotal * 100),
+            currency: 'INR',
+            receipt: order.orderNumber,
+          });
+
+          const payment = await Payment.create({
+            orderId: order._id,
+            razorpayOrderId: rzpOrder.id,
+            amount: Math.round(grandTotal * 100),
+            currency: 'INR',
+            status: 'created',
+          });
+
+          order.paymentId = payment._id;
+          await order.save();
+          razorpayOrderData = {
+            id: rzpOrder.id,
+            amount: rzpOrder.amount,
+            currency: 'INR',
+            keyId: env.RAZORPAY_KEY_ID,
+          };
+        } catch (err: unknown) {
+          logger.error({ err }, 'Razorpay order creation failed');
+          await this.releaseStock(order._id);
+          await Payment.deleteOne({ orderId: order._id });
+          await Order.deleteOne({ _id: order._id });
+          throw AppError.serviceUnavailable('Unable to start Razorpay checkout. Please retry.');
+        }
       }
     } else {
-      // COD orders immediately commit stock
       await this.commitStock(order._id);
     }
+
+    cart.items = [];
+    cart.appliedCoupon = undefined;
+    await cart.save();
 
     return {
       order,

@@ -11,6 +11,7 @@ import { Cart } from '../src/modules/cart/cart.model.js';
 import { Order } from '../src/modules/orders/order.model.js';
 import { StockReservation } from '../src/modules/orders/stock-reservation.model.js';
 import { Payment } from '../src/modules/payments/payment.model.js';
+import { WebhookEvent } from '../src/modules/payments/webhook-event.model.js';
 import { PRODUCT_STATUS, USER_ROLES, ORDER_STATUS } from '@shopsense/shared';
 import { generateAccessToken } from '../src/modules/auth/token.util.js';
 import { env } from '../src/config/env.js';
@@ -44,6 +45,7 @@ describe('Checkout, Stock Reservation & Payments Integration Tests', () => {
     await Order.deleteMany({});
     await StockReservation.deleteMany({});
     await Payment.deleteMany({});
+    await WebhookEvent.deleteMany({});
 
     testCategory = await Category.create({ name: 'Gadgets', slug: 'gadgets' });
 
@@ -232,5 +234,59 @@ describe('Checkout, Stock Reservation & Payments Integration Tests', () => {
     // Verify stock reservation committed
     const reservation = await StockReservation.findOne({ orderId });
     expect(reservation?.status).toBe('committed');
+  });
+
+  it('verifies webhook signatures against raw bytes and processes duplicate event IDs once', async () => {
+    const product = await Product.create({
+      title: 'Webhook Test Speaker',
+      slug: 'webhook-test-speaker',
+      description: 'Speaker used for webhook integration coverage',
+      categoryId: testCategory._id,
+      basePrice: 4000,
+      status: PRODUCT_STATUS.PUBLISHED,
+      variants: [{ sku: 'WEBHOOK-1', price: 4000, stock: 2, images: [] }],
+    });
+
+    await request(app)
+      .post('/api/v1/cart/items')
+      .set('Authorization', `Bearer ${user1Token}`)
+      .send({ productId: product._id.toString(), sku: 'WEBHOOK-1', quantity: 1 });
+
+    const orderRes = await request(app)
+      .post('/api/v1/checkout/create-order')
+      .set('Authorization', `Bearer ${user1Token}`)
+      .send({ shippingAddress: { fullName: 'Buyer', addressLine1: 'Street', city: 'Pune', postalCode: '411001' } });
+    const razorpayOrderId = orderRes.body.data.razorpayOrder.id;
+    const eventId = 'evt_webhook_raw_signature';
+    const rawBody = JSON.stringify(
+      {
+        event: 'payment.captured',
+        payload: { payment: { entity: { id: 'pay_webhook_1', order_id: razorpayOrderId } } },
+      },
+      null,
+      2
+    );
+    const signature = crypto
+      .createHmac('sha256', env.RAZORPAY_WEBHOOK_SECRET || 'placeholder_webhook_secret')
+      .update(rawBody)
+      .digest('hex');
+
+    const sendWebhook = () =>
+      request(app)
+        .post('/api/v1/payments/webhook')
+        .set('Content-Type', 'application/json')
+        .set('x-razorpay-signature', signature)
+        .set('x-razorpay-event-id', eventId)
+        .send(rawBody);
+
+    const firstDelivery = await sendWebhook();
+    expect(firstDelivery.status).toBe(200);
+    expect(firstDelivery.body.data.status).toBe('processed');
+    expect((await Order.findById(orderRes.body.data.order._id))?.status).toBe(ORDER_STATUS.PAID);
+
+    const duplicateDelivery = await sendWebhook();
+    expect(duplicateDelivery.status).toBe(200);
+    expect(duplicateDelivery.body.data.status).toBe('already_processed');
+    expect(await WebhookEvent.countDocuments({ eventId })).toBe(1);
   });
 });

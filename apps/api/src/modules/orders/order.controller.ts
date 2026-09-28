@@ -35,9 +35,10 @@ export class OrderController {
   static async handleWebhook(req: Request, res: Response, next: NextFunction) {
     try {
       const signature = req.headers['x-razorpay-signature'] as string;
-      const rawBody = JSON.stringify(req.body);
+      const rawBody = Buffer.isBuffer(req.body) ? req.body.toString('utf8') : '';
+      const eventId = req.headers['x-razorpay-event-id'] as string | undefined;
 
-      const result = await PaymentService.processWebhook(rawBody, signature || '');
+      const result = await PaymentService.processWebhook(rawBody, signature || '', eventId);
       res.status(200).json({ success: true, data: result });
     } catch (err) {
       next(err);

@@ -6,7 +6,9 @@ import Image from 'next/image';
 import Link from 'next/link';
 import { apiFetch } from '../../../lib/api';
 import { useCartStore } from '../../../stores/cart.store';
+import { useAuthStore } from '../../../stores/auth.store';
 import {
+  Heart,
   Star,
   Check,
   ShoppingBag,
@@ -46,6 +48,7 @@ export default function ProductDetailPage() {
   const slug = params?.slug as string;
 
   const { addItem } = useCartStore();
+  const { isAuthenticated } = useAuthStore();
 
   const [product, setProduct] = useState<ProductDetail | null>(null);
   const [loading, setLoading] = useState(true);
@@ -53,6 +56,8 @@ export default function ProductDetailPage() {
   const [selectedImageIndex, setSelectedImageIndex] = useState(0);
   const [quantity, setQuantity] = useState(1);
   const [added, setAdded] = useState(false);
+  const [saved, setSaved] = useState(false);
+  const [saving, setSaving] = useState(false);
 
   const fetchProduct = useCallback(async () => {
     if (!slug) return;
@@ -72,6 +77,17 @@ export default function ProductDetailPage() {
   useEffect(() => {
     fetchProduct();
   }, [fetchProduct]);
+
+  useEffect(() => {
+    if (!product || !isAuthenticated) {
+      setSaved(false);
+      return;
+    }
+
+    apiFetch<{ data: { productIds: Array<{ _id: string }> } }>('/cart/wishlist')
+      .then((res) => setSaved(res.data.productIds.some((item) => item._id === product._id)))
+      .catch(() => setSaved(false));
+  }, [product, isAuthenticated]);
 
   if (loading) {
     return (
@@ -130,6 +146,25 @@ export default function ProductDetailPage() {
       router.push('/cart');
     } catch (err: unknown) {
       if (err instanceof Error) alert(err.message);
+    }
+  };
+
+  const handleToggleWishlist = async () => {
+    if (!isAuthenticated) {
+      router.push('/login');
+      return;
+    }
+
+    setSaving(true);
+    try {
+      await apiFetch(`/cart/wishlist/${product._id}`, {
+        method: saved ? 'DELETE' : 'POST',
+      });
+      setSaved(!saved);
+    } catch (err: unknown) {
+      if (err instanceof Error) alert(err.message);
+    } finally {
+      setSaving(false);
     }
   };
 
@@ -349,6 +384,16 @@ export default function ProductDetailPage() {
               >
                 <Zap className="w-4 h-4 text-emerald-400" />
                 Buy Now
+              </button>
+              <button
+                type="button"
+                onClick={handleToggleWishlist}
+                disabled={saving}
+                aria-pressed={saved}
+                className="inline-flex items-center justify-center gap-2 rounded-2xl border border-slate-200 bg-white px-5 py-3.5 text-sm font-bold text-slate-700 transition hover:border-rose-300 hover:text-rose-600 disabled:opacity-50"
+              >
+                <Heart className={`size-4 ${saved ? 'fill-rose-500 text-rose-500' : ''}`} />
+                {saved ? 'Saved' : 'Save'}
               </button>
             </div>
 

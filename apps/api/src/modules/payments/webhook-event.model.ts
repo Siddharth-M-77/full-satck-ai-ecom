@@ -5,7 +5,7 @@ export interface IWebhookEvent extends Document {
   event: string;
   payload: Record<string, unknown>;
   processedAt: Date;
-  status: 'success' | 'failed' | 'ignored';
+  status: 'processing' | 'success' | 'failed' | 'ignored';
   error?: string;
 }
 
@@ -17,8 +17,8 @@ const webhookEventSchema = new Schema<IWebhookEvent>(
     processedAt: { type: Date, default: Date.now, index: true },
     status: {
       type: String,
-      enum: ['success', 'failed', 'ignored'],
-      default: 'success',
+      enum: ['processing', 'success', 'failed', 'ignored'],
+      default: 'processing',
     },
     error: { type: String },
   },

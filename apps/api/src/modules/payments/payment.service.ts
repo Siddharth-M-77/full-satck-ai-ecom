@@ -14,7 +14,8 @@ export class PaymentService {
     razorpayPaymentId: string,
     signature: string
   ): boolean {
-    const secret = env.RAZORPAY_KEY_SECRET || 'placeholder_secret';
+    const secret = env.RAZORPAY_KEY_SECRET || (env.NODE_ENV === 'test' ? 'placeholder_secret' : undefined);
+    if (!secret) throw AppError.serviceUnavailable('Razorpay payment verification is not configured');
     const body = `${razorpayOrderId}|${razorpayPaymentId}`;
 
     const expectedSignature = crypto
@@ -69,8 +70,9 @@ export class PaymentService {
     return { success: true, order };
   }
 
-  static async processWebhook(rawBody: string, signature: string) {
-    const secret = env.RAZORPAY_WEBHOOK_SECRET || 'placeholder_webhook_secret';
+  static async processWebhook(rawBody: string, signature: string, deliveryEventId?: string) {
+    const secret = env.RAZORPAY_WEBHOOK_SECRET || (env.NODE_ENV === 'test' ? 'placeholder_webhook_secret' : undefined);
+    if (!secret) throw AppError.serviceUnavailable('Razorpay webhooks are not configured');
 
     const expectedSignature = crypto
       .createHmac('sha256', secret)
@@ -89,23 +91,48 @@ export class PaymentService {
       throw AppError.forbidden('Invalid webhook signature');
     }
 
-    const payload = JSON.parse(rawBody);
-    const eventId = payload.event_id || payload.id || crypto.randomUUID();
+    let payload: Record<string, any>;
+    try {
+      payload = JSON.parse(rawBody);
+    } catch {
+      throw AppError.badRequest('Invalid webhook payload');
+    }
 
-    // 1. Idempotency Check
-    const existing = await WebhookEvent.findOne({ eventId });
-    if (existing) {
+    const eventId = deliveryEventId || payload.event_id || payload.id;
+    if (typeof eventId !== 'string' || eventId.length === 0) {
+      throw AppError.badRequest('Webhook event ID is required');
+    }
+
+    let webhookRecord = await WebhookEvent.findOne({ eventId });
+    if (webhookRecord?.status === 'success' || webhookRecord?.status === 'ignored') {
       logger.info({ eventId }, 'Webhook already processed. Skipping duplicate.');
       return { status: 'already_processed' };
     }
 
-    // 2. Record event in idempotency collection
-    const webhookRecord = await WebhookEvent.create({
-      eventId,
-      event: payload.event,
-      payload,
-      status: 'success',
-    });
+    if (webhookRecord?.status === 'processing') {
+      return { status: 'processing' };
+    }
+
+    if (webhookRecord) {
+      webhookRecord.status = 'processing';
+      webhookRecord.error = undefined;
+      webhookRecord.payload = payload;
+      await webhookRecord.save();
+    } else {
+      try {
+        webhookRecord = await WebhookEvent.create({
+          eventId,
+          event: payload.event || 'unknown',
+          payload,
+          status: 'processing',
+        });
+      } catch (error) {
+        if ((error as { code?: number }).code === 11000) {
+          return { status: 'processing' };
+        }
+        throw error;
+      }
+    }
 
     try {
       const paymentEntity = payload.payload?.payment?.entity;
@@ -113,28 +140,34 @@ export class PaymentService {
 
       if (payload.event === 'payment.captured' && rzpOrderId) {
         const payment = await Payment.findOne({ razorpayOrderId: rzpOrderId });
-        if (payment && payment.status !== 'captured') {
-          payment.status = 'captured';
-          payment.razorpayPaymentId = paymentEntity.id;
-          payment.rawWebhookPayloads.push(payload);
-          await payment.save();
-
+        if (!payment) throw AppError.notFound('Payment record not found');
+        if (payment.status !== 'captured') {
           await OrderService.transitionStatus(
             payment.orderId.toString(),
             ORDER_STATUS.PAID,
             'Payment captured via Webhook (Source of Truth)'
           );
+          payment.status = 'captured';
         }
+        payment.razorpayPaymentId = paymentEntity.id;
+        payment.rawWebhookPayloads.push(payload);
+        await payment.save();
       } else if (payload.event === 'payment.failed' && rzpOrderId) {
         const payment = await Payment.findOne({ razorpayOrderId: rzpOrderId });
-        if (payment) {
+        if (payment && payment.status !== 'captured') {
           payment.status = 'failed';
           payment.error = paymentEntity?.error_description || payload;
           await payment.save();
 
           await OrderService.releaseStock(payment.orderId);
         }
+      } else {
+        webhookRecord.status = 'ignored';
       }
+
+      if (webhookRecord.status !== 'ignored') webhookRecord.status = 'success';
+      webhookRecord.processedAt = new Date();
+      await webhookRecord.save();
     } catch (err: unknown) {
       webhookRecord.status = 'failed';
       webhookRecord.error = err instanceof Error ? err.message : String(err);

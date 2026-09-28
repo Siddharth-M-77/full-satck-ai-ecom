@@ -80,6 +80,13 @@ export default function CatalogPage() {
       .catch(() => setSavedProductIds([]));
   }, [isAuthenticated]);
 
+  useEffect(() => {
+    const params = new URLSearchParams(window.location.search);
+    setSearch(params.get('search') || '');
+    setSelectedCategory(params.get('category') || '');
+    setSort(params.get('sort') || 'newest');
+  }, []);
+
   const fetchCatalogData = useCallback(async () => {
     setLoading(true);
     try {

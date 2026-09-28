@@ -366,7 +366,7 @@ async function seed() {
           price: 2899,
           compareAtPrice: 3999,
           stock: 50,
-          images: [{ url: 'https://images.unsplash.com/photo-1542272604-780c96856592?w=800&q=80', isPrimary: true }],
+          images: [{ url: 'https://images.unsplash.com/photo-1541099649105-f69ad21f3246?w=800&q=80', isPrimary: true }],
         },
         {
           sku: 'LEVI-511-IND-34',
@@ -374,7 +374,7 @@ async function seed() {
           price: 2899,
           compareAtPrice: 3999,
           stock: 40,
-          images: [{ url: 'https://images.unsplash.com/photo-1542272604-780c96856592?w=800&q=80', isPrimary: true }],
+          images: [{ url: 'https://images.unsplash.com/photo-1541099649105-f69ad21f3246?w=800&q=80', isPrimary: true }],
         },
       ],
     },
@@ -546,9 +546,45 @@ async function seed() {
     { cat: 'home-workspace', brand: 'sony', prefix: 'Full Desk Felt Merino Wool Keyboard Mat', price: 1299, tags: ['deskmat', 'workspace', 'home'] },
   ];
 
+  const generatedProductImages: Record<string, string[]> = {
+    electronics: [
+      'https://images.unsplash.com/photo-1505740420928-5e560c06d30e?w=800&q=85',
+      'https://images.unsplash.com/photo-1546435770-a3e426bf472b?w=800&q=85',
+      'https://images.unsplash.com/photo-1600294037681-c80b4cb5b434?w=800&q=85',
+      'https://images.unsplash.com/photo-1516035069371-29a1b244cc32?w=800&q=85',
+    ],
+    footwear: [
+      'https://images.unsplash.com/photo-1542291026-7eec264c27ff?w=800&q=85',
+      'https://images.unsplash.com/photo-1551107696-a4b0c5a0d9a2?w=800&q=85',
+      'https://images.unsplash.com/photo-1595950653106-6c9ebd614d3a?w=800&q=85',
+    ],
+    'mens-apparel': [
+      'https://images.unsplash.com/photo-1541099649105-f69ad21f3246?w=800&q=85',
+      'https://images.unsplash.com/photo-1521572163474-6864f9cf17ab?w=800&q=85',
+      'https://images.unsplash.com/photo-1596755094514-f87e34085b2c?w=800&q=85',
+    ],
+    'womens-collection': [
+      'https://images.unsplash.com/photo-1515886657613-9f3515b0c78f?w=800&q=85',
+      'https://images.unsplash.com/photo-1534528741775-53994a69daeb?w=800&q=85',
+      'https://images.unsplash.com/photo-1483985988355-763728e1935b?w=800&q=85',
+    ],
+    accessories: [
+      'https://images.unsplash.com/photo-1523275335684-37898b6baf30?w=800&q=85',
+      'https://images.unsplash.com/photo-1602143407151-7111542de6e8?w=800&q=85',
+    ],
+    'home-workspace': [
+      'https://images.unsplash.com/photo-1586023492125-27b2c045efd7?w=800&q=85',
+      'https://images.unsplash.com/photo-1498050108023-c5249f4df085?w=800&q=85',
+    ],
+  };
+
   let counter = 1;
   while (seedProducts.length < 52) {
     const tmpl = productTemplates[(counter - 1) % productTemplates.length];
+    const imageSet = generatedProductImages[tmpl.cat] || generatedProductImages.electronics;
+    const imageUrl = tmpl.tags.some((tag) => tag === 'jeans' || tag === 'denim')
+      ? 'https://images.unsplash.com/photo-1475178626620-a4d074967452?w=800&q=85'
+      : imageSet[(counter - 1) % imageSet.length];
     const itemNum = Math.floor(counter / productTemplates.length) + 1;
     const title = `${tmpl.prefix} (Edition ${itemNum})`;
     const slug = `${title.toLowerCase().replace(/[^a-z0-9]+/g, '-')}`;
@@ -575,7 +611,7 @@ async function seed() {
           stock: 25 + (counter % 30),
           images: [
             {
-              url: 'https://images.unsplash.com/photo-1523275335684-37898b6baf30?w=800&q=80',
+              url: imageUrl,
               isPrimary: true,
             },
           ],
