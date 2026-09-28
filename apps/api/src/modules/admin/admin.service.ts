@@ -49,9 +49,11 @@ export class AdminService {
     const previousMonthStart = new Date(monthStart);
     previousMonthStart.setUTCDate(previousMonthStart.getUTCDate() - 30);
 
-    const summarizeSales = async (startDate: Date, endDate: Date = now) => {
+    // Without an end date the window runs up to now (inclusive); with one it is [start, end).
+    const summarizeSales = async (startDate: Date, endDate?: Date) => {
+      const createdAt = endDate ? { $gte: startDate, $lt: endDate } : { $gte: startDate, $lte: now };
       const [summary] = await Order.aggregate([
-        { $match: { createdAt: { $gte: startDate, $lt: endDate === now ? new Date(now.getTime() + 1) : endDate }, status: { $in: paidStatuses } } },
+        { $match: { createdAt, status: { $in: paidStatuses } } },
         {
           $group: {
             _id: null,
@@ -173,7 +175,16 @@ export class AdminService {
         outOfStockCount: inventory.filter((variant) => variant.stock === 0).length,
       },
       salesPeriods: { today, last7Days, last30Days },
+      previousSalesPeriods: { today: yesterday, last7Days: previous7Days, last30Days: previous30Days },
       salesTrend,
+      orderStatusBreakdown: statusRows.map((row) => ({ status: row._id, count: row.count })),
+      revenueByCategory: categoryRows.map((row) => ({ name: row.name, revenue: row.revenue, units: row.units })),
+      customers: { total: totalCustomers, newLast30Days: newCustomers, blocked: blockedCustomers },
+      stockHealth: {
+        healthy: inventory.filter((variant) => variant.stock > 5).length,
+        low: inventory.filter((variant) => variant.stock > 0 && variant.stock <= 5).length,
+        out: inventory.filter((variant) => variant.stock === 0).length,
+      },
       recentOrders,
       lowStockProducts: lowStockItems,
       topProducts,

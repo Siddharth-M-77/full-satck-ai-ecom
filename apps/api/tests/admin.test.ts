@@ -154,6 +154,49 @@ describe('Admin Panel, Analytics & Inventory Logs Integration Tests', () => {
       }),
     ]));
     expect(res.body.data.recentOrders).toHaveLength(1);
+    expect(res.body.data.salesTrend).toHaveLength(30);
+    expect(res.body.data.previousSalesPeriods.today).toMatchObject({ revenue: 0, orders: 0 });
+    expect(res.body.data.orderStatusBreakdown).toEqual([{ status: ORDER_STATUS.PAID, count: 1 }]);
+    expect(res.body.data.revenueByCategory).toEqual([{ name: 'Audio', revenue: 19999, units: 1 }]);
+    expect(res.body.data.customers).toEqual({ total: 1, newLast30Days: 1, blocked: 0 });
+    expect(res.body.data.stockHealth).toEqual({ healthy: 1, low: 0, out: 0 });
+  });
+
+  it('lets admins download an invoice for any paid order', async () => {
+    const order = await Order.create({
+      orderNumber: 'ORD-INVOICE-ADMIN',
+      userId: customerUser._id,
+      shippingAddress: { fullName: customerUser.name, city: 'Bengaluru', postalCode: '560001' },
+      items: [{ productId: testProduct._id, sku: 'NC-BLK-01', title: testProduct.title, unitPrice: 19999, quantity: 1, subtotal: 19999 }],
+      pricing: { itemsTotal: 19999, discountTotal: 0, shippingFee: 0, taxTotal: 0, grandTotal: 19999 },
+      status: ORDER_STATUS.PAID,
+    });
+
+    const res = await request(app)
+      .get(`/api/v1/admin/orders/${order._id}/invoice`)
+      .set('Authorization', `Bearer ${adminToken}`);
+
+    expect(res.status).toBe(200);
+    expect(res.headers['content-type']).toContain('application/pdf');
+
+    await Order.updateOne({ _id: order._id }, { status: ORDER_STATUS.PENDING_PAYMENT });
+    const pending = await request(app)
+      .get(`/api/v1/admin/orders/${order._id}/invoice`)
+      .set('Authorization', `Bearer ${adminToken}`);
+    expect(pending.status).toBe(409);
+  });
+
+  it('searches customers by name or email', async () => {
+    await User.create({ name: 'Priya Sharma', email: 'priya@example.com', passwordHash: 'dummyhash', role: USER_ROLES.CUSTOMER });
+
+    const res = await request(app)
+      .get('/api/v1/admin/customers?search=priya')
+      .set('Authorization', `Bearer ${adminToken}`);
+
+    expect(res.status).toBe(200);
+    expect(res.body.data).toHaveLength(1);
+    expect(res.body.data[0].email).toBe('priya@example.com');
+    expect(res.body.pagination.total).toBe(1);
   });
 
   it('allows admin to adjust variant stock and logs inventory and audit records', async () => {

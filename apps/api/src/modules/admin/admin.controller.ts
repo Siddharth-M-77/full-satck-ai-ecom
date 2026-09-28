@@ -11,6 +11,7 @@ import { invalidateCatalogCache } from '../catalog/cache.util.js';
 import { ORDER_STATUS } from '@shopsense/shared';
 import { Coupon } from '../coupons/coupon.model.js';
 import { OrderService } from '../orders/order.service.js';
+import { InvoiceService } from '../orders/invoice.service.js';
 
 export class AdminController {
   static async getDashboard(req: Request, res: Response, next: NextFunction) {
@@ -32,10 +33,11 @@ export class AdminController {
       const query: Record<string, any> = {};
       if (status) query.status = status;
       if (search) {
+        const pattern = search.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
         query.$or = [
-          { orderNumber: { $regex: search, $options: 'i' } },
-          { 'customer.email': { $regex: search, $options: 'i' } },
-          { 'customer.name': { $regex: search, $options: 'i' } },
+          { orderNumber: { $regex: pattern, $options: 'i' } },
+          { 'shippingAddress.fullName': { $regex: pattern, $options: 'i' } },
+          { 'shippingAddress.city': { $regex: pattern, $options: 'i' } },
         ];
       }
 
@@ -122,6 +124,25 @@ export class AdminController {
         req.user?.email
       );
       res.json({ success: true, data: order });
+    } catch (err) {
+      next(err);
+    }
+  }
+
+  static async downloadInvoice(req: Request, res: Response, next: NextFunction) {
+    try {
+      const order = await Order.findById(String(req.params.id));
+      if (!order) throw AppError.notFound('Order not found');
+      if (order.status === ORDER_STATUS.PENDING_PAYMENT || order.status === ORDER_STATUS.CANCELLED) {
+        throw AppError.conflict('Invoice is available after payment is confirmed');
+      }
+
+      const buyer = await User.findById(order.userId).select('email').lean();
+      const pdf = await InvoiceService.generate(order, buyer?.email);
+      res.setHeader('Content-Type', 'application/pdf');
+      res.setHeader('Content-Disposition', `attachment; filename="${order.orderNumber}-invoice.pdf"`);
+      res.setHeader('Content-Length', pdf.length);
+      res.status(200).send(pdf);
     } catch (err) {
       next(err);
     }
@@ -269,15 +290,25 @@ export class AdminController {
     try {
       const page = parseInt(req.query.page as string, 10) || 1;
       const limit = parseInt(req.query.limit as string, 10) || 20;
+      const search = typeof req.query.search === 'string' ? req.query.search.trim() : '';
 
-      const customers = await User.find({ role: 'customer' })
-        .select('-passwordHash')
+      const query: Record<string, any> = { role: 'customer' };
+      if (search) {
+        const pattern = search.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+        query.$or = [
+          { name: { $regex: pattern, $options: 'i' } },
+          { email: { $regex: pattern, $options: 'i' } },
+        ];
+      }
+
+      const customers = await User.find(query)
+        .select('-passwordHash -refreshTokens -verificationToken -resetPasswordToken')
         .sort({ createdAt: -1 })
         .skip((page - 1) * limit)
         .limit(limit)
         .lean();
 
-      const total = await User.countDocuments({ role: 'customer' });
+      const total = await User.countDocuments(query);
 
       res.json({
         success: true,
@@ -390,7 +421,12 @@ export class AdminController {
 
   static async getInventoryLogs(_req: Request, res: Response, next: NextFunction) {
     try {
-      const logs = await InventoryLog.find().sort({ createdAt: -1 }).limit(50).lean();
+      const logs = await InventoryLog.find()
+        .populate('productId', 'title slug')
+        .populate('performedBy', 'name email')
+        .sort({ createdAt: -1 })
+        .limit(100)
+        .lean();
       res.json({ success: true, data: logs });
     } catch (err) {
       next(err);

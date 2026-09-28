@@ -15,6 +15,7 @@ adminRouter.get('/dashboard', AdminController.getDashboard);
 adminRouter.get('/orders', AdminController.getOrders);
 adminRouter.patch('/orders/:id/status', AdminController.updateOrderStatus);
 adminRouter.post('/orders/:id/refund', AdminController.refundOrder);
+adminRouter.get('/orders/:id/invoice', AdminController.downloadInvoice);
 
 // Catalog & Inventory
 adminRouter.get('/products', AdminController.getProducts);
